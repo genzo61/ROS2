@@ -1,0 +1,18 @@
+ekf_filter_node:
+  ros__parameters:
+
+    frequency: 30.0
+    two_d_mode: true
+    publish_tf: true
+
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: map
+
+    output_topic: /odometry/global
+
+
+    odom0: /odometry/local
+    gps0: /vehicle/gps/fix
+
