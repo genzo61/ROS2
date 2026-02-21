@@ -1,31 +1,28 @@
+from setuptools import setup, find_packages
 import os
 from glob import glob
-from setuptools import setup
-
-package_name = 'vehicle_localization'
 
 setup(
-    name=package_name,
+    name='vehicle_localization',
     version='0.0.0',
-    packages=[package_name],
+    packages=find_packages(include=['vehicle_localization', 'vehicle_localization.*']),
     data_files=[
         ('share/ament_index/resource_index/packages',
-            ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml']),
-        
-        # --- EKLEDİĞİMİZ KISIM BURASI (Launch ve Config) ---
-        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
-        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
+            ['resource/vehicle_localization']),
+        ('share/vehicle_localization', ['package.xml']),
+        (os.path.join('share', 'vehicle_localization', 'config'), glob('config/*.yaml')),
+        (os.path.join('share', 'vehicle_localization', 'launch'), glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='ali',
-    maintainer_email='ali@todo.todo',
-    description='Vehicle Localization Package',
-    license='TODO: License declaration',
+    maintainer='Ali',
+    maintainer_email='ali@example.com',
+    description='Vehicle localization package',
+    license='Apache License 2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'ekf_filter_node = vehicle_localization.ekf_filter_node:main',
         ],
     },
 )

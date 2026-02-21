@@ -1,0 +1,25 @@
+slam_toolbox:
+  ros__parameters:
+    # --- Çözücü (Solver) Ayarları ---
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # --- ROS Frame (Koordinat) Ayarları (BURASI ÇOK KRİTİK) ---
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_footprint  # Eğer URDF'de ana gövden base_link ise burayı base_link yapmalısın.
+    scan_topic: /scan
+    mode: mapping
+
+    # --- Harita ve Sensör Ayarları ---
+    resolution: 0.05            # Harita çözünürlüğü (5 cm detay, dış mekan için ideal)
+    max_laser_range: 20.0       # Lidarının okuyabileceği maksimum mesafe (metre)
+    minimum_time_interval: 0.5  # Sensör verisini işleme sıklığı
+    transform_timeout: 0.2
+    tf_buffer_duration: 30.
+    stack_size_to_use: 40000000 
+    enable_interactive_mode: true
