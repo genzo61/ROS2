@@ -14,6 +14,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        (os.path.join('share', package_name, 'tools'), glob('tools/*.sh')),
         (os.path.join('share', package_name, 'worlds'), glob('worlds/*')),
     ],
     install_requires=['setuptools'],
@@ -29,6 +30,9 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'igvc_waypoint_navigator = vehicle_bringup.igvc_waypoint_navigator:main',
+            'yaris_pilotu = vehicle_bringup.yaris_pilotu:main',
+            'lane_tracker = vehicle_bringup.lane_tracker:main',
         ],
     },
 )

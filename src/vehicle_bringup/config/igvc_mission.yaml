@@ -1,0 +1,25 @@
+igvc_waypoint_navigator:
+  ros__parameters:
+    use_sim_time: true
+    waypoint_altitude: 0.0
+    wait_for_nav2_seconds: 60.0
+    wait_for_fromll_seconds: 60.0
+    wait_for_tf_seconds: 5.0
+    feedback_interval_seconds: 2.0
+
+    # Anchor calibration (GPS -> map offset)
+    anchor_gps: [40.810000, 29.360000]
+    # Match Gazebo spawn origin so GPS->map conversion is in the same frame
+    anchor_map: [-16.42, -6.153]
+
+    # Safety / behavior
+    skip_waypoint_distance_m: 1.0
+    enforce_goal_distance_check: true
+    max_goal_distance_m: 80.0
+
+    # Flattened [lat1, lon1, lat2, lon2, ...]
+    gps_waypoints: [40.810000, 29.360000, 40.810050, 29.360080]
+
+    # Optional direct map path (x1, y1, x2, y2, ...).
+    # If non-empty, navigator ignores gps_waypoints and follows these points.
+    map_waypoints: []

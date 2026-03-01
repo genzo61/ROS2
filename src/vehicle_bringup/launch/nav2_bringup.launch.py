@@ -1,4 +1,6 @@
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 from nav2_common.launch import RewrittenYaml
@@ -8,10 +10,13 @@ def generate_launch_description():
 
     pkg_share = get_package_share_directory('vehicle_bringup')
     nav2_params_file = os.path.join(pkg_share, 'config', 'nav2_params.yaml')
+    odom_topic = LaunchConfiguration('odom_topic')
 
     configured_params = RewrittenYaml(
         source_file=nav2_params_file,
-        param_rewrites={},
+        param_rewrites={
+            'odom_topic': odom_topic,
+        },
         convert_types=True
     )
 
@@ -25,6 +30,11 @@ def generate_launch_description():
     ]
 
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'odom_topic',
+            default_value='/odometry/local',
+            description='Nav2 odometry topic (/odometry/local for EKF, /odom for diff_drive-only).',
+        ),
 
         # Controller Server
         Node(
@@ -32,7 +42,7 @@ def generate_launch_description():
             executable='controller_server',
             name='controller_server',
             output='screen',
-            parameters=[configured_params],
+            parameters=[configured_params, {'use_sim_time': True}],
         ),
 
         # Planner Server
@@ -41,7 +51,7 @@ def generate_launch_description():
             executable='planner_server',
             name='planner_server',
             output='screen',
-            parameters=[configured_params],
+            parameters=[configured_params, {'use_sim_time': True}],
         ),
 
         # Behavior Server (recoveries)
@@ -50,7 +60,7 @@ def generate_launch_description():
             executable='behavior_server',
             name='behavior_server',
             output='screen',
-            parameters=[configured_params],
+            parameters=[configured_params, {'use_sim_time': True}],
         ),
 
         # BT Navigator
@@ -59,7 +69,7 @@ def generate_launch_description():
             executable='bt_navigator',
             name='bt_navigator',
             output='screen',
-            parameters=[configured_params],
+            parameters=[configured_params, {'use_sim_time': True}],
         ),
 
         # Waypoint Follower
@@ -68,7 +78,7 @@ def generate_launch_description():
             executable='waypoint_follower',
             name='waypoint_follower',
             output='screen',
-            parameters=[configured_params],
+            parameters=[configured_params, {'use_sim_time': True}],
         ),
 
         # Velocity Smoother
@@ -77,7 +87,7 @@ def generate_launch_description():
             executable='velocity_smoother',
             name='velocity_smoother',
             output='screen',
-            parameters=[configured_params],
+            parameters=[configured_params, {'use_sim_time': True}],
             remappings=[
                 ('cmd_vel', 'cmd_vel_nav'),
                 ('cmd_vel_smoothed', 'cmd_vel'),
@@ -94,6 +104,10 @@ def generate_launch_description():
                 'use_sim_time': True,
                 'autostart': True,
                 'node_names': lifecycle_nodes,
+                'bond_timeout': 15.0,
+                'service_timeout': 30.0,
+                'attempt_respawn_reconnection': False,
+                'bond_respawn_max_duration': 10.0,
             }],
         ),
     ])
