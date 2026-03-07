@@ -1,0 +1,58 @@
+lane_camera_subscriber:
+  ros__parameters:
+    use_sim_time: true
+    input_image_topic: /front_camera/image_raw
+    input_topic_candidates:
+      - /front_camera/image_raw
+      - /camera/image_raw
+      - /teknofest_araci/front_camera/image_raw
+      - /teknofest_araci/camera/image_raw
+    auto_discover_image_topic: false
+    watchdog_seconds: 2.5
+    topic_scan_period_seconds: 2.0
+    output_image_topic: /lane/camera/image_raw
+    ignored_topic_prefixes:
+      - /lane/
+
+lane_yolo_inference:
+  ros__parameters:
+    use_sim_time: true
+    image_topic: /lane/camera/image_raw
+    detections_topic: /lane/detections
+    debug_image_topic: /lane/yolo/debug
+    publish_debug_image: true
+    # "auto": look for installed share path and known workspace paths.
+    model_path: "auto"
+    confidence_threshold: 0.18
+    iou_threshold: 0.40
+    left_labels: ["left_lane", "lane_left", "left"]
+    right_labels: ["right_lane", "lane_right", "right"]
+    # Fallback HSV line extraction if YOLO model is not available.
+    enable_fallback_lane_extraction: true
+    fallback_roi_top_ratio: 0.55
+    fallback_white_value_min: 170
+    fallback_white_sat_max: 80
+    fallback_yellow_h_min: 15
+    fallback_yellow_h_max: 40
+    fallback_min_peak_pixels: 120
+
+lane_detection_parser:
+  ros__parameters:
+    use_sim_time: true
+    detections_topic: /lane/detections
+    lane_error_topic: /lane/error
+    lane_valid_topic: /lane/valid
+    left_lane_topic: /lane/left
+    right_lane_topic: /lane/right
+    lane_deviation_px_topic: /lane/deviation_px
+    expected_lane_width_px: 210.0
+    smoothing_alpha: 0.22
+    single_lane_error_scale: 0.65
+    adaptive_lane_width_alpha: 0.12
+    single_lane_bias_px: 8.0
+    min_lane_width_px: 120.0
+    max_lane_width_px: 360.0
+    single_lane_max_abs_error: 0.22
+    single_lane_valid_abs_error: 0.18
+    two_lane_max_abs_error: 0.45
+    publish_debug_logs: true

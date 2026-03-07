@@ -16,6 +16,7 @@ setup(
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'tools'), glob('tools/*.sh')),
         (os.path.join('share', package_name, 'worlds'), glob('worlds/*')),
+        (os.path.join('share', package_name, 'models'), glob('models/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -33,6 +34,9 @@ setup(
             'igvc_waypoint_navigator = vehicle_bringup.igvc_waypoint_navigator:main',
             'yaris_pilotu = vehicle_bringup.yaris_pilotu:main',
             'lane_tracker = vehicle_bringup.lane_tracker:main',
+            'lane_camera_subscriber = vehicle_bringup.lane_camera_subscriber:main',
+            'lane_yolo_inference = vehicle_bringup.lane_yolo_inference:main',
+            'lane_detection_parser = vehicle_bringup.lane_detection_parser:main',
         ],
     },
 )

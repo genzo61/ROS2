@@ -144,10 +144,10 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        DeclareLaunchArgument('spawn_x', default_value='-16.42'),
-        DeclareLaunchArgument('spawn_y', default_value='-6.153'),
-        DeclareLaunchArgument('spawn_z', default_value='0.038'),
-        DeclareLaunchArgument('spawn_yaw', default_value='0.0'),
+        DeclareLaunchArgument('spawn_x', default_value='-16.239442'),
+        DeclareLaunchArgument('spawn_y', default_value='-4.701300'),
+        DeclareLaunchArgument('spawn_z', default_value='0.018912'),
+        DeclareLaunchArgument('spawn_yaw', default_value='1.618679'),
         DeclareLaunchArgument(
             'mode',
             default_value='local_nav2_mode',

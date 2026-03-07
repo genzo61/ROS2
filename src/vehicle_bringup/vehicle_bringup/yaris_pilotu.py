@@ -1,15 +1,29 @@
 #!/usr/bin/env python3
 
 import math
+from enum import Enum, auto
 from typing import List, Tuple
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import Image, PointCloud2
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Bool, Float32
+from std_msgs.msg import Bool, Float32, Float32MultiArray
 import sensor_msgs_py.point_cloud2 as pc2
+
+
+# ---------------------------------------------------------------------------
+# Lane State Machine
+# ---------------------------------------------------------------------------
+
+class LaneState(Enum):
+    NORMAL_LANE = auto()      # İki şerit, sağlıklı kontrol
+    DEGRADED_LANE = auto()    # Tek şerit veya düşük güvenilirlik
+    NO_LANE_COAST = auto()    # Lane kayboldu, son komutla coast et
+    NO_LANE_SLOW = auto()     # Coast süresi bitti, yavaşla
+    BLOCKED_STOP = auto()     # Gerçek merkez blokaj veya timeout → dur
 
 
 # User-provided golden route
@@ -112,52 +126,200 @@ def yaw_from_quaternion(x: float, y: float, z: float, w: float) -> float:
     return math.atan2(siny_cosp, cosy_cosp)
 
 
+def clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def as_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return bool(value)
+
+
 class YarisPilotu(Node):
     def __init__(self) -> None:
         super().__init__('yaris_pilotu')
+        self.declare_parameter('route_enabled', True)
+        self.declare_parameter('lane_only_speed', 0.40)
 
         self.rota = ROTA
         self.hedef_index = 0
         self.tamamlandi = False
+        self.route_enabled = as_bool(self.get_parameter('route_enabled').value)
+        self.lane_only_speed = float(self.get_parameter('lane_only_speed').value)
 
         # Driving settings
-        self.gps_hiz = 2.0
-        self.lookahead_dist = 0.9
-        self.yaw_k = 1.5
+        self.gps_hiz = 1.1
+        self.lookahead_dist = 0.75
+        self.yaw_k = 1.25
         self.keskin_viraj_hiz = 0.4
         self.keskin_viraj_esik = 0.4
+        self.start_max_dist = 4.0
+        self.start_heading_weight = 0.8
 
         # Obstacle settings (PointCloud)
-        self.duba_algilama_mesafesi = 1.3
-        self.duba_kacis_sertligi = 2.5
-        self.duba_min_z = 0.05
-        self.duba_y_sinir = 0.6
-        self.duba_min_nokta = 5
-        self.duba_hiz = 0.3
+        self.duba_algilama_mesafesi = 1.0
+        self.duba_kacis_sertligi = 1.6
+        self.duba_min_z = 0.10
+        self.duba_max_z = 1.2
+        self.duba_y_sinir = 0.32
+        self.duba_min_nokta = 12
+        self.duba_cikis_min_nokta = 5
+        self.duba_hiz = 0.28
+        self.duba_hold_sec = 0.45
+        self.duba_filtre_alpha = 0.35
+        self.duba_y_deadband = 0.03
+        self.duba_max_angular = 1.0
 
         self.duba_var = False
         self.duba_konumu = 0.0
+        self.duba_filtreli_konum = 0.0
+        self.duba_last_seen_ns = 0
+
+        # Depth camera based gap selection (RealSense-like behavior in sim)
+        self.depth_enabled = True
+        self.depth_topic = '/front_depth_camera/depth/image_raw'
+        self.depth_alt_topic = '/front_camera/depth/image_raw'
+        self.depth_near_m = 0.15
+        self.depth_far_m = 4.0
+        self.depth_close_m = 0.90
+        self.depth_close_px_threshold = 700
+        self.depth_close_ratio_threshold = 0.025
+        self.depth_center_close_px_threshold = 180
+        self.depth_center_gate_px_threshold = 90
+        self.depth_emergency_center_px_threshold = 280
+        self.depth_emergency_max_center_clearance = 0.55
+        self.depth_center_roi_half_width_px = 80
+        self.depth_roi_top_ratio = 0.50
+        self.depth_roi_bottom_ratio = 0.82
+        self.depth_side_margin_px = 120
+        self.depth_clearance_percentile = 35.0
+        self.depth_clearance_margin_m = 0.10
+        self.depth_center_adv_margin_m = 0.22
+        self.depth_turn_gain = 0.55
+        self.depth_turn_bias = 0.08
+        self.depth_hold_sec = 0.5
+        self.depth_obstacle = False
+        self.depth_emergency = False
+        self.depth_min_dist = 99.0
+        self.depth_avoid_dir = 1.0
+        self.depth_last_seen_ns = 0
+        self.depth_left_close_px = 0
+        self.depth_right_close_px = 0
+        self.depth_center_close_px = 0
+        self.depth_close_ratio = 0.0
+        self.depth_left_clearance = 99.0
+        self.depth_right_clearance = 99.0
+        self.depth_center_clearance = 99.0
+        # NEW: center block ratio for gating depth avoidance
+        self.center_block_ratio = 0.30
+        self.stop_distance_threshold = 0.35
 
         self.x = 0.0
         self.y = 0.0
         self.yaw = 0.0
 
         # Lane settings (camera lane tracker feedback)
-        self.lane_kp = 2.5
-        self.lane_max_correction = 2.0
-        self.lane_timeout_sec = 0.6
-        self.lane_speed_penalty = 0.8
+        self.lane_kp = 1.2                          # ↓ was 1.7 — less aggressive P
+        self.lane_max_correction = 0.55
+        self.lane_timeout_sec = 0.8
+        self.lane_hold_sec = 0.9
+        self.lane_hold_max_abs_error = 0.12
+        self.lane_speed_penalty = 0.9
+        self.lane_loss_speed = 0.30
+        self.lane_centering_speed = 0.45
+        self.route_steer_weight_with_lane = 0.0
+        self.lane_deadband = 0.02
+        self.lane_error_clip = 0.35
+        self.lane_kd = 0.25                         # ↓ was 0.35
+        self.lane_ki = 0.90
+        self.lane_integral = 0.0
+        self.lane_integral_limit = 0.45
+        self.lane_single_line_scale = 0.45
+        self.lane_single_line_center_push = 0.015
+        self.lane_single_line_speed_cap = 0.22
+        self.lane_single_line_correction_limit = 0.20   # ↓ was 0.25
+        self.lane_single_line_unreliable_err = 0.16
+        self.lane_single_line_unreliable_steer = 0.12
+        self.lane_single_line_unreliable_speed = 0.14
+        self.lane_jump_reject = 0.12
+        self.corner_enter_abs_err = 0.10
+        self.corner_exit_abs_err = 0.045
+        self.corner_hold_sec = 1.2
+        self.corner_speed_cap = 0.18
+        self.corner_correction_limit = 0.55
+        self.corner_max_angular = 0.95
+        self.corner_mode = False
+        self.corner_hold_until_ns = 0
+        self.obstacle_recovery_sec = 1.5
+        self.obstacle_recovery_until_ns = 0
+        self.prev_duba_var = False
+        self.last_lane_control_error = 0.0
+        self.last_lane_control_ns = 0
+
+        # ── NEW: angular z safety parameters ──
+        self.max_angular_z = 1.0                    # ↓ was 2.2 — absolute hard limit
+        self.angular_clamp = 0.8                    # normal operation clamp
+        self.angular_rate_limit = 1.5               # max rad/s change per second
+        self.angular_smoothing = 0.40               # ↓ was 0.45 — slightly quicker response
+
+        # ── NEW: lane error smoothing ──
+        self.lane_error_smoothing_alpha = 0.30
+        self.smoothed_lane_error = 0.0
+
+        # ── NEW: single lane confidence gain ──
+        self.single_lane_confidence_gain = 0.50
+
+        # ── NEW: state machine parameters ──
+        self.coast_duration = 1.5                   # seconds in NO_LANE_COAST
+        self.coast_speed = 0.20                     # m/s during coast
+        self.slow_speed = 0.08                      # m/s during NO_LANE_SLOW
+        self.no_lane_timeout = 3.0                  # kept for compatibility; no longer triggers BLOCKED_STOP alone
+        self.lane_recover_debounce_sec = 0.3        # lane must stay valid this long
+        self.obstacle_persistence_time = 0.8        # sec required for BLOCKED_STOP latch
+
+        # ── NEW: state machine variables ──
+        self.lane_state = LaneState.NO_LANE_COAST   # start safe until lane is found
+        self.lane_lost_ns = 0                       # when lane was first lost
+        self.lane_recover_start_ns = 0              # when lane started recovering
+        self.lane_state_log_ns = 0                  # throttle state logging
+        self.center_block_start_ns = 0              # persistence tracker for center block
+        self.blocked_persistent = False
+        self.angular_debug_log_ns = 0
+
+        # Kept from original
         self.lane_error = 0.0
         self.lane_valid = False
         self.lane_stamp_ns = 0
+        self.lane_last_seen_ns = 0
+        self.lane_last_sign = 1.0
+        self.lane_last_valid_error = 0.0
+        self.lane_last_valid_ns = 0
+        self.left_lane_seen = False
+        self.right_lane_seen = False
+        self.last_cmd_angular = 0.0
 
         self.sub_odom = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         self.sub_lidar = self.create_subscription(PointCloud2, '/points', self.lidar_callback, 10)
+        self.sub_depth = self.create_subscription(Image, self.depth_topic, self.depth_callback, 10)
+        self.sub_depth_alt = self.create_subscription(Image, self.depth_alt_topic, self.depth_callback, 10)
         self.sub_lane_error = self.create_subscription(Float32, '/lane/error', self.lane_error_callback, 10)
         self.sub_lane_valid = self.create_subscription(Bool, '/lane/valid', self.lane_valid_callback, 10)
+        self.sub_lane_left = self.create_subscription(Float32MultiArray, '/lane/left', self.lane_left_callback, 10)
+        self.sub_lane_right = self.create_subscription(Float32MultiArray, '/lane/right', self.lane_right_callback, 10)
         self.pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
-        self.get_logger().info('Yaris Pilotu aktif. Altin rota yüklendi, duba kacis aktif.')
+        self.get_logger().info(
+            f'Yaris Pilotu aktif. route_enabled={self.route_enabled} '
+            f'angular_clamp={self.angular_clamp} max_angular_z={self.max_angular_z} '
+            f'state_machine=ON duba kacis aktif.'
+        )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Callbacks (unchanged logic, added error smoothing)
+    # ──────────────────────────────────────────────────────────────────────
 
     def odom_callback(self, msg: Odometry) -> None:
         self.x = msg.pose.pose.position.x
@@ -169,32 +331,226 @@ class YarisPilotu(Node):
         sayi = 0
         toplam_y = 0.0
 
-        for x, y, z in pc2.read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True):
-            if (
-                x > 0.05
-                and x < self.duba_algilama_mesafesi
-                and y > -self.duba_y_sinir
-                and y < self.duba_y_sinir
-                and z > self.duba_min_z
-            ):
-                sayi += 1
-                toplam_y += float(y)
+        try:
+            for x, y, z in pc2.read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True):
+                if (
+                    x > 0.05
+                    and x < self.duba_algilama_mesafesi
+                    and y > -self.duba_y_sinir
+                    and y < self.duba_y_sinir
+                    and z > self.duba_min_z
+                    and z < self.duba_max_z
+                ):
+                    sayi += 1
+                    toplam_y += float(y)
+        except RuntimeError:
+            return
 
-        if sayi > self.duba_min_nokta:
+        now_ns = self.get_clock().now().nanoseconds
+        ort_y = (toplam_y / float(sayi)) if sayi > 0 else 0.0
+
+        if sayi >= self.duba_min_nokta:
             self.duba_var = True
-            self.duba_konumu = toplam_y / float(sayi)
+            self.duba_last_seen_ns = now_ns
+            self.duba_filtreli_konum = (
+                self.duba_filtre_alpha * ort_y
+                + (1.0 - self.duba_filtre_alpha) * self.duba_filtreli_konum
+            )
+        elif self.duba_var and sayi >= self.duba_cikis_min_nokta:
+            self.duba_last_seen_ns = now_ns
+            self.duba_filtreli_konum = (
+                self.duba_filtre_alpha * ort_y
+                + (1.0 - self.duba_filtre_alpha) * self.duba_filtreli_konum
+            )
         else:
-            self.duba_var = False
+            age_sec = (now_ns - self.duba_last_seen_ns) / 1e9 if self.duba_last_seen_ns > 0 else float('inf')
+            self.duba_var = age_sec <= self.duba_hold_sec
+
+        self.duba_konumu = self.duba_filtreli_konum if self.duba_var else 0.0
 
         self.sur()
 
+    def depth_callback(self, msg: Image) -> None:
+        if not self.depth_enabled:
+            return
+
+        encoding = msg.encoding.lower()
+        if encoding not in ('32fc1', '16uc1'):
+            return
+
+        bpp = 4 if encoding == '32fc1' else 2
+        if msg.step < msg.width * bpp:
+            return
+
+        try:
+            raw = np.frombuffer(msg.data, dtype=np.float32 if encoding == '32fc1' else np.uint16)
+            row_width = msg.step // bpp
+            if row_width <= 0:
+                return
+            depth = raw.reshape((msg.height, row_width))[:, : msg.width].astype(np.float32)
+        except Exception:
+            return
+
+        if encoding == '16uc1':
+            depth *= 0.001  # mm -> m
+
+        roi_top = int(max(0.2, min(0.9, self.depth_roi_top_ratio)) * msg.height)
+        roi_bottom = int(max(0.3, min(0.98, self.depth_roi_bottom_ratio)) * msg.height)
+        roi_bottom = max(roi_bottom, roi_top + 1)
+        roi = depth[roi_top:roi_bottom, :]
+        if roi.size == 0:
+            return
+
+        valid = np.isfinite(roi) & (roi > self.depth_near_m) & (roi < self.depth_far_m)
+        valid_count = int(np.count_nonzero(valid))
+        if valid_count == 0:
+            return
+
+        close = valid & (roi < self.depth_close_m)
+        half = roi.shape[1] // 2
+        center_half = max(10, int(self.depth_center_roi_half_width_px))
+        center_min = max(0, half - center_half)
+        center_max = min(roi.shape[1], half + center_half)
+
+        left_close = int(np.count_nonzero(close[:, :half]))
+        right_close = int(np.count_nonzero(close[:, half:]))
+        center_close = int(np.count_nonzero(close[:, center_min:center_max]))
+        total_close = left_close + right_close
+
+        total_px = max(1, close.size)
+        close_ratio = float(total_close) / float(total_px)
+
+        left_valid = roi[:, :half][valid[:, :half]]
+        right_valid = roi[:, half:][valid[:, half:]]
+        center_valid = roi[:, center_min:center_max][valid[:, center_min:center_max]]
+        left_clearance = (
+            float(np.nanpercentile(left_valid, self.depth_clearance_percentile))
+            if left_valid.size > 0
+            else self.depth_near_m
+        )
+        right_clearance = (
+            float(np.nanpercentile(right_valid, self.depth_clearance_percentile))
+            if right_valid.size > 0
+            else self.depth_near_m
+        )
+        center_clearance = (
+            float(np.nanpercentile(center_valid, self.depth_clearance_percentile))
+            if center_valid.size > 0
+            else self.depth_near_m
+        )
+
+        self.depth_left_close_px = left_close
+        self.depth_right_close_px = right_close
+        self.depth_center_close_px = center_close
+        self.depth_close_ratio = close_ratio
+        self.depth_left_clearance = left_clearance
+        self.depth_right_clearance = right_clearance
+        self.depth_center_clearance = center_clearance
+        self.depth_min_dist = float(np.nanpercentile(roi[valid], 15))
+
+        now_ns = self.get_clock().now().nanoseconds
+        side_min_clearance = min(left_clearance, right_clearance)
+        center_is_closer = center_clearance + self.depth_center_adv_margin_m < side_min_clearance
+
+        # ── NEW: compute center block ratio for gating ──
+        center_roi_px = max(1, close[:, center_min:center_max].size)
+        actual_center_block_ratio = float(center_close) / float(center_roi_px)
+
+        strong_center_block = (
+            center_close >= self.depth_center_close_px_threshold
+            and self.depth_min_dist <= self.depth_close_m
+            and center_is_closer
+            and actual_center_block_ratio >= self.center_block_ratio   # NEW gate
+        )
+        wide_block = (
+            total_close >= self.depth_close_px_threshold
+            and close_ratio >= self.depth_close_ratio_threshold
+            and self.depth_min_dist <= 0.95
+            and center_is_closer
+        )
+        center_gate = center_close >= self.depth_center_gate_px_threshold
+        obstacle_now = (
+            strong_center_block or (wide_block and center_gate)
+        )
+        emergency_now = (
+            center_close >= self.depth_emergency_center_px_threshold
+            and center_clearance <= self.depth_emergency_max_center_clearance
+            and center_is_closer
+            and actual_center_block_ratio >= self.center_block_ratio   # NEW gate
+        )
+
+        # BLOCKED_STOP trigger must be persistent, not single-frame.
+        center_block_frame = (
+            center_is_closer
+            and self.depth_min_dist <= self.stop_distance_threshold
+            and actual_center_block_ratio >= self.center_block_ratio
+        )
+        if center_block_frame:
+            if self.center_block_start_ns <= 0:
+                self.center_block_start_ns = now_ns
+            held_sec = (now_ns - self.center_block_start_ns) / 1e9
+            self.blocked_persistent = held_sec >= self.obstacle_persistence_time
+        else:
+            self.center_block_start_ns = 0
+            self.blocked_persistent = False
+
+        if obstacle_now or emergency_now:
+            self.get_logger().info(
+                "DEPTH OBSTACLE: "
+                f"obs={obstacle_now} emerg={emergency_now} "
+                f"min_dist={self.depth_min_dist:.2f} "
+                f"center={center_clearance:.2f} left={left_clearance:.2f} right={right_clearance:.2f} "
+                f"close={center_close} ratio={actual_center_block_ratio:.2f}"
+            )
+        if obstacle_now:
+            self.depth_obstacle = True
+            self.depth_emergency = emergency_now
+            self.depth_last_seen_ns = now_ns
+
+            clearance_delta = left_clearance - right_clearance
+            if abs(clearance_delta) >= self.depth_clearance_margin_m:
+                self.depth_avoid_dir = 1.0 if clearance_delta > 0.0 else -1.0
+            elif left_close > right_close + self.depth_side_margin_px:
+                self.depth_avoid_dir = -1.0  # left side blocked -> go right
+            elif right_close > left_close + self.depth_side_margin_px:
+                self.depth_avoid_dir = 1.0  # right side blocked -> go left
+        else:
+            age_sec = (now_ns - self.depth_last_seen_ns) / 1e9 if self.depth_last_seen_ns > 0 else float('inf')
+            held = age_sec <= self.depth_hold_sec
+            self.depth_obstacle = held
+            if not held:
+                self.depth_emergency = False
+
     def lane_error_callback(self, msg: Float32) -> None:
-        self.lane_error = float(msg.data)
+        raw_err = float(msg.data)
+        # NEW: EMA smoothing on incoming lane error
+        self.smoothed_lane_error = (
+            self.lane_error_smoothing_alpha * raw_err
+            + (1.0 - self.lane_error_smoothing_alpha) * self.smoothed_lane_error
+        )
+        self.lane_error = self.smoothed_lane_error
         self.lane_stamp_ns = self.get_clock().now().nanoseconds
 
     def lane_valid_callback(self, msg: Bool) -> None:
         self.lane_valid = bool(msg.data)
-        self.lane_stamp_ns = self.get_clock().now().nanoseconds
+        now_ns = self.get_clock().now().nanoseconds
+        if self.lane_valid:
+            self.lane_last_valid_error = self.lane_error
+            self.lane_last_valid_ns = now_ns
+            self.lane_stamp_ns = now_ns
+            self.lane_last_seen_ns = now_ns
+            if abs(self.lane_error) >= self.lane_deadband:
+                self.lane_last_sign = 1.0 if self.lane_error >= 0.0 else -1.0
+
+    def lane_left_callback(self, msg: Float32MultiArray) -> None:
+        self.left_lane_seen = len(msg.data) >= 5
+
+    def lane_right_callback(self, msg: Float32MultiArray) -> None:
+        self.right_lane_seen = len(msg.data) >= 5
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Lane validity & hold helpers
+    # ──────────────────────────────────────────────────────────────────────
 
     def lane_is_recent_and_valid(self) -> bool:
         if not self.lane_valid:
@@ -203,79 +559,431 @@ class YarisPilotu(Node):
         age_sec = (now_ns - self.lane_stamp_ns) / 1e9
         return age_sec <= self.lane_timeout_sec
 
+    def lane_hold_available(self) -> bool:
+        if self.lane_last_valid_ns <= 0:
+            return False
+        if abs(self.lane_last_valid_error) > self.lane_hold_max_abs_error:
+            return False
+        now_ns = self.get_clock().now().nanoseconds
+        age_sec = (now_ns - self.lane_last_valid_ns) / 1e9
+        return age_sec <= self.lane_hold_sec
+
+    # ──────────────────────────────────────────────────────────────────────
+    # State machine update
+    # ──────────────────────────────────────────────────────────────────────
+
+    def update_lane_state(self, now_ns: int) -> None:
+        """Deterministic lane state machine: NORMAL → DEGRADED → COAST → SLOW → STOP."""
+        lane_recent = self.lane_is_recent_and_valid()
+        both_lanes = self.left_lane_seen and self.right_lane_seen
+
+        # ── Lane is active ──
+        if lane_recent or self.lane_hold_available():
+            # Debounce recovery: lane must stay valid for recover_debounce_sec
+            if self.lane_state in (LaneState.NO_LANE_COAST, LaneState.NO_LANE_SLOW, LaneState.BLOCKED_STOP):
+                if self.lane_recover_start_ns <= 0:
+                    self.lane_recover_start_ns = now_ns
+                recover_age = (now_ns - self.lane_recover_start_ns) / 1e9
+                if recover_age < self.lane_recover_debounce_sec:
+                    return  # keep current no-lane state until debounce passes
+                # Debounce passed → recover
+                self.lane_integral = 0.0  # reset accumulated integral
+                self.lane_recover_start_ns = 0
+
+            if both_lanes:
+                self.lane_state = LaneState.NORMAL_LANE
+            else:
+                self.lane_state = LaneState.DEGRADED_LANE
+            self.lane_lost_ns = 0
+            return
+
+        # ── Lane is NOT active ──
+        self.lane_recover_start_ns = 0  # reset recovery debounce
+
+        if self.lane_lost_ns <= 0:
+            self.lane_lost_ns = now_ns
+
+        no_lane_age = (now_ns - self.lane_lost_ns) / 1e9
+
+        if no_lane_age <= self.coast_duration:
+            self.lane_state = LaneState.NO_LANE_COAST
+        elif self.blocked_persistent:
+            self.lane_state = LaneState.BLOCKED_STOP
+        else:
+            self.lane_state = LaneState.NO_LANE_SLOW
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Route / Pure Pursuit helpers
+    # ──────────────────────────────────────────────────────────────────────
+
+    def tangent_yaw_at(self, idx: int) -> float:
+        if idx < len(self.rota) - 1:
+            nx, ny = self.rota[idx + 1]
+            cx, cy = self.rota[idx]
+            return math.atan2(ny - cy, nx - cx)
+        if idx > 0:
+            cx, cy = self.rota[idx]
+            px, py = self.rota[idx - 1]
+            return math.atan2(cy - py, cx - px)
+        return self.yaw
+
+    def select_start_index(self) -> tuple[int, float, float]:
+        best_idx = 0
+        best_score = float('inf')
+        best_dist = float('inf')
+        best_heading = math.pi
+
+        for i, (hx, hy) in enumerate(self.rota):
+            dist = math.hypot(hx - self.x, hy - self.y)
+            tangent_yaw = self.tangent_yaw_at(i)
+            heading_err = abs(normalize_angle(tangent_yaw - self.yaw))
+            score = dist + self.start_heading_weight * heading_err
+
+            if score < best_score:
+                best_score = score
+                best_idx = i
+                best_dist = dist
+                best_heading = heading_err
+
+        return best_idx, best_dist, best_heading
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Main control loop
+    # ──────────────────────────────────────────────────────────────────────
+
     def sur(self) -> None:
         twist = Twist()
+        now_ns = self.get_clock().now().nanoseconds
+        lane_term = 0.0
+        route_term = 0.0
+        avoid_term = 0.0
+
+        # After leaving obstacle avoidance, briefly calm steering and reacquire lane.
+        if self.prev_duba_var and not self.duba_var:
+            self.obstacle_recovery_until_ns = now_ns + int(self.obstacle_recovery_sec * 1e9)
+            self.lane_integral = 0.0
+            self.last_cmd_angular *= 0.3
+        self.prev_duba_var = self.duba_var
+        in_obstacle_recovery = now_ns < self.obstacle_recovery_until_ns
 
         if not hasattr(self, 'baslangic_bulundu'):
             self.baslangic_bulundu = False
 
-        if not self.baslangic_bulundu:
-            # Find the closest point in the route to our current position to start from.
-            # Only do this once we have an odometry reading (x/y != 0.0).
+        if self.route_enabled and not self.baslangic_bulundu:
             if self.x != 0.0 or self.y != 0.0:
-                min_dist = float('inf')
-                best_idx = 0
-                for i, (hx, hy) in enumerate(self.rota):
-                    dist = math.hypot(hx - self.x, hy - self.y)
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_idx = i
-                
+                best_idx, min_dist, heading_err = self.select_start_index()
+                if min_dist > self.start_max_dist:
+                    self.get_logger().warn(
+                        f'Rota baslangici bulunamadi (en yakin={min_dist:.2f}m). Arac bekliyor.'
+                    )
+                    self.pub.publish(twist)
+                    return
+
                 self.hedef_index = best_idx
                 self.baslangic_bulundu = True
-                self.get_logger().info(f'Baslangic noktasi bulundu: Index {best_idx}')
+                self.get_logger().info(
+                    f'Baslangic noktasi bulundu: Index {best_idx} dist={min_dist:.2f}m heading_err={heading_err:.2f}rad'
+                )
             else:
-                return # Wait for odometry before moving
+                return  # Wait for odometry before moving
 
-        if self.tamamlandi:
+        if self.route_enabled and self.tamamlandi:
             self.pub.publish(twist)
             return
 
-        # Scenario 1: Obstacle exists -> avoid
-        if self.duba_var:
+        # ── Update lane state machine ──
+        self.update_lane_state(now_ns)
+
+        # Throttled state logging (once per second)
+        if now_ns - self.lane_state_log_ns > int(1e9):
+            self.lane_state_log_ns = now_ns
+            self.get_logger().info(
+                f'[STATE] {self.lane_state.name} lane_valid={self.lane_valid} '
+                f'err={self.lane_error:+.3f} angular={self.last_cmd_angular:+.3f} '
+                f'L={self.left_lane_seen} R={self.right_lane_seen}'
+            )
+
+        # ═══════════════════════════════════════════════════════════════════
+        # Scenario 1: Obstacle exists -> avoid (UNLESS in no-lane states)
+        # ═══════════════════════════════════════════════════════════════════
+        depth_should_override_lane = self.depth_obstacle and self.depth_emergency
+        
+        # Requirement: in no-lane states, angular must be zero (no spin).
+        lane_is_dead = self.lane_state in (
+            LaneState.NO_LANE_COAST,
+            LaneState.NO_LANE_SLOW,
+            LaneState.BLOCKED_STOP,
+        )
+        obstacle_active = (self.duba_var or depth_should_override_lane) and not lane_is_dead
+        
+        if obstacle_active:
             twist.linear.x = self.duba_hiz
-            twist.angular.z = -1.0 * self.duba_kacis_sertligi * self.duba_konumu
+            desired_angular = 0.0
 
-        # Scenario 2: Follow route (Pure Pursuit style)
-        else:
-            if self.hedef_index >= len(self.rota) - 1:
-                self.tamamlandi = True
-                self.pub.publish(twist)
-                self.get_logger().info('Parkur tamamlandi!')
-                return
+            duba_y = self.duba_konumu
+            if abs(duba_y) < self.duba_y_deadband:
+                duba_y = 0.0
 
-            while self.hedef_index < len(self.rota) - 1:
-                hx, hy = self.rota[self.hedef_index]
-                dist = math.hypot(hx - self.x, hy - self.y)
-                if dist < self.lookahead_dist:
-                    self.hedef_index += 1
+            if self.duba_var:
+                desired_angular += -1.0 * self.duba_kacis_sertligi * duba_y
+
+            if depth_should_override_lane:
+                depth_turn = self.depth_turn_gain * self.depth_avoid_dir
+                if self.depth_center_close_px >= self.depth_center_close_px_threshold:
+                    depth_turn += self.depth_turn_bias * self.depth_avoid_dir
+                desired_angular += depth_turn
+                if self.depth_min_dist < self.stop_distance_threshold:
+                    # Emergency stop: obstacle too close at center
+                    twist.linear.x = 0.0
+                    desired_angular = 0.0
+                elif self.depth_min_dist < 0.40:
+                    twist.linear.x = min(twist.linear.x, 0.10)
+                elif self.depth_min_dist < 0.65:
+                    twist.linear.x = min(twist.linear.x, 0.14)
+                elif self.depth_min_dist < 0.85:
+                    twist.linear.x = min(twist.linear.x, 0.18)
                 else:
-                    break
+                    twist.linear.x = min(twist.linear.x, 0.24)
+                if not self.duba_var:
+                    desired_angular = clamp(desired_angular, -0.45, 0.45)
 
-            target_x, target_y = self.rota[self.hedef_index]
-            hedef_yaw = math.atan2(target_y - self.y, target_x - self.x)
-            hata_yaw = normalize_angle(hedef_yaw - self.yaw)
+            desired_angular = clamp(desired_angular, -self.duba_max_angular, self.duba_max_angular)
+            avoid_term = desired_angular
 
-            twist.linear.x = self.gps_hiz
-            twist.angular.z = self.yaw_k * hata_yaw
+        # ═══════════════════════════════════════════════════════════════════
+        # Scenario 2: Follow route + lane (STATE MACHINE DRIVEN)
+        # ═══════════════════════════════════════════════════════════════════
+        if not obstacle_active:
+            # Compute pure pursuit angular (used by multiple states)
+            pure_pursuit_angular = 0.0
+            if self.route_enabled:
+                if self.hedef_index >= len(self.rota) - 1:
+                    self.tamamlandi = True
+                    self.pub.publish(twist)
+                    self.get_logger().info('Parkur tamamlandi!')
+                    return
 
-            if abs(hata_yaw) > self.keskin_viraj_esik:
-                twist.linear.x = self.keskin_viraj_hiz
+                while self.hedef_index < len(self.rota) - 1:
+                    hx, hy = self.rota[self.hedef_index]
+                    dist = math.hypot(hx - self.x, hy - self.y)
+                    if dist < self.lookahead_dist:
+                        self.hedef_index += 1
+                    else:
+                        break
 
-            # Apply lane centering correction when lane tracker is healthy.
-            if self.lane_is_recent_and_valid():
-                # Reduce pure pursuit influence if severely off-center
-                pp_weight = max(0.1, 1.0 - abs(self.lane_error) * 2.0)
-                twist.angular.z *= pp_weight
+                target_x, target_y = self.rota[self.hedef_index]
+                hedef_yaw = math.atan2(target_y - self.y, target_x - self.x)
+                hata_yaw = normalize_angle(hedef_yaw - self.yaw)
 
-                lane_correction = self.lane_kp * self.lane_error
-                lane_correction = max(-self.lane_max_correction, min(self.lane_max_correction, lane_correction))
-                twist.angular.z += lane_correction
+                twist.linear.x = self.gps_hiz
+                pure_pursuit_angular = self.yaw_k * hata_yaw
 
-                speed_scale = max(0.3, 1.0 - self.lane_speed_penalty * abs(self.lane_error))
-                twist.linear.x *= speed_scale
+                if abs(hata_yaw) > self.keskin_viraj_esik:
+                    twist.linear.x = self.keskin_viraj_hiz
+            else:
+                twist.linear.x = self.lane_only_speed
+
+            desired_angular = 0.0
+            route_term = pure_pursuit_angular if self.route_enabled else 0.0
+
+            # ─────────────────────────────────────
+            # NORMAL_LANE: two lanes, full control
+            # ─────────────────────────────────────
+            if self.lane_state == LaneState.NORMAL_LANE:
+                desired_angular, lane_term, route_term = self._compute_lane_correction(
+                    now_ns, pure_pursuit_angular, twist, in_obstacle_recovery,
+                    both_lanes=True
+                )
+
+            # ─────────────────────────────────────
+            # DEGRADED_LANE: single lane, calmed gains
+            # ─────────────────────────────────────
+            elif self.lane_state == LaneState.DEGRADED_LANE:
+                desired_angular, lane_term, route_term = self._compute_lane_correction(
+                    now_ns, pure_pursuit_angular, twist, in_obstacle_recovery,
+                    both_lanes=False
+                )
+
+            # ─────────────────────────────────────
+            # NO_LANE_COAST: lane lost, coast forward
+            # ─────────────────────────────────────
+            elif self.lane_state == LaneState.NO_LANE_COAST:
+                self.lane_integral *= 0.8
+                self.corner_mode = False
+                # Strict no-lane behavior: coast straight, no steering.
+                desired_angular = 0.0
+                route_term = 0.0
+                lane_term = 0.0
+                twist.linear.x = min(twist.linear.x, self.coast_speed)
+
+            # ─────────────────────────────────────
+            # NO_LANE_SLOW: coast expired, creep forward
+            # ─────────────────────────────────────
+            elif self.lane_state == LaneState.NO_LANE_SLOW:
+                self.lane_integral = 0.0
+                self.corner_mode = False
+                # Go straight, no route influence
+                desired_angular = 0.0
+                route_term = 0.0
+                lane_term = 0.0
+                twist.linear.x = self.slow_speed
+
+            # ─────────────────────────────────────
+            # BLOCKED_STOP: full stop, zero everything
+            # ─────────────────────────────────────
+            elif self.lane_state == LaneState.BLOCKED_STOP:
+                self.lane_integral = 0.0
+                self.corner_mode = False
+                desired_angular = 0.0
+                route_term = 0.0
+                lane_term = 0.0
+                twist.linear.x = 0.0
+                # Force angular to zero immediately (bypass rate limiting below)
+                self.last_cmd_angular = 0.0
+
+        # ═══════════════════════════════════════════════════════════════════
+        # Final angular z — clamp + rate limit + smoothing
+        # ═══════════════════════════════════════════════════════════════════
+
+        # Safety rule: if linear speed is effectively zero, angular MUST be zero.
+        if abs(twist.linear.x) <= 0.015:
+            desired_angular = 0.0
+            
+            # In no-lane states, bypass rate limiting to kill spin immediately.
+            if self.lane_state in (LaneState.NO_LANE_COAST, LaneState.NO_LANE_SLOW, LaneState.BLOCKED_STOP):
+                self.last_cmd_angular = 0.0
+
+        # Hard requirement: no steering in no-lane states.
+        if self.lane_state in (LaneState.NO_LANE_COAST, LaneState.NO_LANE_SLOW, LaneState.BLOCKED_STOP):
+            desired_angular = 0.0
+            self.last_cmd_angular = 0.0
+
+        # Step 1: normal operation clamp
+        desired_angular = clamp(desired_angular, -self.angular_clamp, self.angular_clamp)
+
+        # Step 2: rate limiting — prevent angular spikes
+        dt = 0.05  # approximate control period (lidar callback ~20 Hz)
+        max_delta = self.angular_rate_limit * dt
+        delta = desired_angular - self.last_cmd_angular
+        delta = clamp(delta, -max_delta, max_delta)
+        rate_limited_angular = self.last_cmd_angular + delta
+
+        # Step 3: EMA smoothing
+        self.last_cmd_angular = (
+            self.angular_smoothing * rate_limited_angular
+            + (1.0 - self.angular_smoothing) * self.last_cmd_angular
+        )
+
+        # Step 4: absolute hard limit (safety)
+        self.last_cmd_angular = clamp(self.last_cmd_angular, -self.max_angular_z, self.max_angular_z)
+
+        twist.angular.z = self.last_cmd_angular
+
+        if now_ns - self.angular_debug_log_ns > int(1e9):
+            self.angular_debug_log_ns = now_ns
+            self.get_logger().info(
+                f'[ANG_DEBUG] state={self.lane_state.name} lane_term={lane_term:+.3f} '
+                f'route_term={route_term:+.3f} avoid_term={avoid_term:+.3f} '
+                f'final_angular={self.last_cmd_angular:+.3f}'
+            )
 
         self.pub.publish(twist)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Lane correction helper (used by NORMAL_LANE and DEGRADED_LANE)
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _compute_lane_correction(
+        self,
+        now_ns: int,
+        pure_pursuit_angular: float,
+        twist: Twist,
+        in_obstacle_recovery: bool,
+        both_lanes: bool,
+    ) -> tuple[float, float, float]:
+        """Compute desired angular from lane error.
+        Returns: (desired_angular, lane_term, route_term_used)
+        """
+
+        lane_err = clamp(self.lane_error, -self.lane_error_clip, self.lane_error_clip)
+
+        if not both_lanes:
+            # ── DEGRADED gains: scale down P, kill I, reduce D ──
+            effective_kp = self.lane_kp * self.single_lane_confidence_gain
+            effective_kd = self.lane_kd * 0.5
+            effective_ki = 0.0  # no integral in single-lane
+
+            lane_err *= self.lane_single_line_scale
+            if self.left_lane_seen and not self.right_lane_seen:
+                lane_err -= self.lane_single_line_center_push
+            elif self.right_lane_seen and not self.left_lane_seen:
+                lane_err += self.lane_single_line_center_push
+            lane_err = clamp(lane_err, -0.10, 0.10)
+            if abs(lane_err) > self.lane_single_line_unreliable_err:
+                lane_err = clamp(
+                    lane_err,
+                    -self.lane_single_line_unreliable_steer,
+                    self.lane_single_line_unreliable_steer,
+                )
+        else:
+            effective_kp = self.lane_kp
+            effective_kd = self.lane_kd
+            effective_ki = self.lane_ki
+
+        if abs(lane_err) < self.lane_deadband:
+            lane_err = 0.0
+
+        dt = (now_ns - self.last_lane_control_ns) / 1e9 if self.last_lane_control_ns > 0 else 0.0
+        lane_err_rate = 0.0
+        if dt > 1e-4:
+            if abs(lane_err - self.last_lane_control_error) > self.lane_jump_reject:
+                lane_err = 0.75 * self.last_lane_control_error + 0.25 * lane_err
+            lane_err_rate = (lane_err - self.last_lane_control_error) / dt
+            lane_err_rate = clamp(lane_err_rate, -1.5, 1.5)
+        self.last_lane_control_error = lane_err
+        self.last_lane_control_ns = now_ns
+
+        if dt > 1e-4 and effective_ki > 0.0:
+            self.lane_integral += lane_err * dt * effective_ki
+            self.lane_integral = clamp(self.lane_integral, -self.lane_integral_limit, self.lane_integral_limit)
+
+        # Corner mode
+        if (not both_lanes) and abs(lane_err) >= self.corner_enter_abs_err:
+            self.corner_mode = True
+            self.corner_hold_until_ns = now_ns + int(self.corner_hold_sec * 1e9)
+        elif both_lanes and abs(lane_err) <= self.corner_exit_abs_err and now_ns > self.corner_hold_until_ns:
+            self.corner_mode = False
+        elif self.corner_mode and now_ns <= self.corner_hold_until_ns:
+            pass
+        elif self.corner_mode and both_lanes and abs(lane_err) <= self.corner_exit_abs_err:
+            self.corner_mode = False
+
+        lane_correction = effective_kp * lane_err + self.lane_integral + effective_kd * lane_err_rate
+        lane_correction_limit = self.lane_max_correction if both_lanes else self.lane_single_line_correction_limit
+        if self.corner_mode:
+            lane_correction_limit = min(lane_correction_limit, self.corner_correction_limit)
+        lane_correction = clamp(lane_correction, -lane_correction_limit, lane_correction_limit)
+
+        route_weight = self.route_steer_weight_with_lane if both_lanes else 0.15
+        route_term_used = route_weight * pure_pursuit_angular
+        lane_term = lane_correction
+        desired_angular = route_term_used + lane_term
+
+        speed_scale = max(0.35, 1.0 - self.lane_speed_penalty * abs(lane_err))
+        twist.linear.x = min(twist.linear.x, self.lane_centering_speed * speed_scale)
+        if not both_lanes:
+            twist.linear.x = min(twist.linear.x, self.lane_single_line_speed_cap)
+            if abs(lane_err) >= self.lane_single_line_unreliable_err:
+                twist.linear.x = min(twist.linear.x, self.lane_single_line_unreliable_speed)
+            if in_obstacle_recovery:
+                twist.linear.x = min(twist.linear.x, 0.16)
+                desired_angular *= 0.45
+        if self.corner_mode:
+            twist.linear.x = min(twist.linear.x, self.corner_speed_cap)
+            desired_angular = clamp(desired_angular, -self.corner_max_angular, self.corner_max_angular)
+            self.lane_integral *= 0.98
+
+        return desired_angular, lane_term, route_term_used
 
 
 def main(args=None) -> None:

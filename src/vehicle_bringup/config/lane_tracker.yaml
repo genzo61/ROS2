@@ -19,11 +19,11 @@ lane_tracker:
     roi_top_ratio: 0.55
 
     # White line threshold (HSV): low saturation, high value.
-    white_value_min: 170
+    white_value_min: 120
     white_sat_max: 80
 
     # Histogram lane extraction tuning.
-    min_peak_pixels: 160
+    min_peak_pixels: 60
     expected_lane_width_px: 260
 
     # Smoother output for steering.
