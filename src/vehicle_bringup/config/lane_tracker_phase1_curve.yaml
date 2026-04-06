@@ -1,0 +1,26 @@
+lane_tracker:
+  ros__parameters:
+    use_sim_time: true
+    image_topic: /front_camera/image_raw
+    image_topic_candidates:
+      - /front_camera/image_raw
+      - /camera/image_raw
+      - /teknofest_araci/front_camera/image_raw
+      - /teknofest_araci/camera/image_raw
+    auto_discover_image_topic: false
+    image_watchdog_seconds: 2.5
+    topic_scan_period_seconds: 2.0
+    lane_error_topic: /lane/error
+    lane_heading_error_topic: /lane/heading_error
+    lane_confidence_topic: /lane/confidence
+    lane_available_topic: /lane/available
+    lane_valid_topic: /lane/valid
+    debug_image_topic: /lane/debug
+    publish_debug: true
+
+    roi_top_ratio: 0.52
+    white_value_min: 140
+    white_sat_max: 100
+    min_peak_pixels: 28
+    expected_lane_width_px: 300
+    smoothing_alpha: 0.24

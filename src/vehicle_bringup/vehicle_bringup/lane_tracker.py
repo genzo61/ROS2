@@ -28,6 +28,9 @@ class LaneTracker(Node):
         self.declare_parameter('image_watchdog_seconds', 2.5)
         self.declare_parameter('topic_scan_period_seconds', 2.0)
         self.declare_parameter('lane_error_topic', '/lane/error')
+        self.declare_parameter('lane_heading_error_topic', '/lane/heading_error')
+        self.declare_parameter('lane_confidence_topic', '/lane/confidence')
+        self.declare_parameter('lane_available_topic', '/lane/available')
         self.declare_parameter('lane_valid_topic', '/lane/valid')
         self.declare_parameter('debug_image_topic', '/lane/debug')
         self.declare_parameter('publish_debug', True)
@@ -50,6 +53,9 @@ class LaneTracker(Node):
         topic_scan_period_seconds = float(self.get_parameter('topic_scan_period_seconds').value)
 
         lane_error_topic = str(self.get_parameter('lane_error_topic').value)
+        lane_heading_error_topic = str(self.get_parameter('lane_heading_error_topic').value)
+        lane_confidence_topic = str(self.get_parameter('lane_confidence_topic').value)
+        lane_available_topic = str(self.get_parameter('lane_available_topic').value)
         lane_valid_topic = str(self.get_parameter('lane_valid_topic').value)
         self.debug_image_topic = str(self.get_parameter('debug_image_topic').value)
         self.publish_debug = bool(self.get_parameter('publish_debug').value)
@@ -62,6 +68,7 @@ class LaneTracker(Node):
         self.smoothing_alpha = float(self.get_parameter('smoothing_alpha').value)
 
         self.smoothed_error = None
+        self.smoothed_heading_error = None
 
         self.sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -75,9 +82,12 @@ class LaneTracker(Node):
 
         self.set_image_subscription(self.image_topic)
         self.error_pub = self.create_publisher(Float32, lane_error_topic, 10)
+        self.heading_error_pub = self.create_publisher(Float32, lane_heading_error_topic, 10)
+        self.confidence_pub = self.create_publisher(Float32, lane_confidence_topic, 10)
+        self.available_pub = self.create_publisher(Bool, lane_available_topic, 10)
         self.valid_pub = self.create_publisher(Bool, lane_valid_topic, 10)
         self.debug_pub = self.create_publisher(Image, self.debug_image_topic, 10)
-        self.publish_lane_state(0.0, False)
+        self.publish_lane_state(0.0, False, 0.0, 0.0)
 
         self.discovery_timer = None
         if self.auto_discover_image_topic:
@@ -164,10 +174,28 @@ class LaneTracker(Node):
 
         self.no_image_warned = False
 
-    def publish_lane_state(self, lane_error: float, lane_valid: bool) -> None:
+    def publish_lane_state(
+        self,
+        lane_error: float,
+        lane_valid: bool,
+        heading_error: float,
+        confidence: float,
+    ) -> None:
         error_msg = Float32()
         error_msg.data = float(self.clamp(lane_error, -1.0, 1.0))
         self.error_pub.publish(error_msg)
+
+        heading_msg = Float32()
+        heading_msg.data = float(self.clamp(heading_error, -1.0, 1.0))
+        self.heading_error_pub.publish(heading_msg)
+
+        confidence_msg = Float32()
+        confidence_msg.data = float(self.clamp(confidence, 0.0, 1.0))
+        self.confidence_pub.publish(confidence_msg)
+
+        available_msg = Bool()
+        available_msg.data = bool(lane_valid)
+        self.available_pub.publish(available_msg)
 
         valid_msg = Bool()
         valid_msg.data = bool(lane_valid)
@@ -278,8 +306,14 @@ class LaneTracker(Node):
 
         center_px, left_px, right_px = self.find_lane_center(mask)
         lane_valid = center_px is not None
+        lower_mask = mask[mask.shape[0] // 2 :, :]
+        upper_mask = mask[: mask.shape[0] // 2, :]
+        near_center_px, _, _ = self.find_lane_center(lower_mask) if lower_mask.size else (None, None, None)
+        far_center_px, _, _ = self.find_lane_center(upper_mask) if upper_mask.size else (None, None, None)
 
         lane_error = 0.0
+        heading_error = 0.0
+        confidence = 0.0
         if lane_valid:
             raw_error = ((width * 0.5) - center_px) / (width * 0.5)
             if self.smoothed_error is None:
@@ -288,12 +322,28 @@ class LaneTracker(Node):
                 alpha = self.clamp(self.smoothing_alpha, 0.0, 1.0)
                 self.smoothed_error = alpha * raw_error + (1.0 - alpha) * self.smoothed_error
             lane_error = float(self.smoothed_error)
+            has_both_lanes = left_px is not None and right_px is not None
+            confidence = 0.95 if has_both_lanes else 0.65
         else:
             if self.smoothed_error is not None:
                 self.smoothed_error *= 0.95
                 lane_error = float(self.smoothed_error)
 
-        self.publish_lane_state(lane_error, lane_valid)
+        if near_center_px is not None and far_center_px is not None:
+            raw_heading_error = (near_center_px - far_center_px) / (width * 0.5)
+            if self.smoothed_heading_error is None:
+                self.smoothed_heading_error = raw_heading_error
+            else:
+                alpha = self.clamp(self.smoothing_alpha, 0.0, 1.0)
+                self.smoothed_heading_error = (
+                    alpha * raw_heading_error + (1.0 - alpha) * self.smoothed_heading_error
+                )
+            heading_error = float(self.smoothed_heading_error)
+        elif self.smoothed_heading_error is not None:
+            self.smoothed_heading_error *= 0.90
+            heading_error = float(self.smoothed_heading_error)
+
+        self.publish_lane_state(lane_error, lane_valid, heading_error, confidence)
 
         if self.publish_debug and self.debug_pub.get_subscription_count() > 0:
             debug = frame.copy()
@@ -317,7 +367,10 @@ class LaneTracker(Node):
                 rx = int(right_px)
                 cv2.line(debug, (rx, roi_top), (rx, height - 1), (0, 200, 200), 1)
 
-            text = f'valid={lane_valid} err={self.clamp(lane_error, -1.0, 1.0):+.3f}'
+            text = (
+                f'valid={lane_valid} err={self.clamp(lane_error, -1.0, 1.0):+.3f} '
+                f'hdg={self.clamp(heading_error, -1.0, 1.0):+.3f} conf={confidence:.2f}'
+            )
             cv2.putText(debug, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             self.debug_pub.publish(self.bgr_to_image_msg(debug, msg.header))
 

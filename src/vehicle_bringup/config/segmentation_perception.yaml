@@ -1,0 +1,27 @@
+segmentation_perception_node:
+  ros__parameters:
+    use_sim_time: true
+    image_topic: /front_camera/image_raw
+    drivable_mask_topic: /perception/drivable_mask
+    obstacle_mask_topic: /perception/obstacle_mask
+    debug_image_topic: /perception/segmentation_debug
+    publish_debug_image: true
+
+    model_path: auto
+    device: ""
+    confidence_threshold: 0.25
+    iou_threshold: 0.45
+    mask_threshold: 0.50
+    retina_masks: true
+
+    # If your model has a single class and label matching is not configured,
+    # all predicted masks are interpreted according to this semantic.
+    primary_mask_semantics: obstacle
+    unknown_class_mode: primary
+    derive_missing_mask: true
+
+    # Fill these if your model has explicit class names or ids.
+    drivable_class_labels: []
+    obstacle_class_labels: ["line"]
+    drivable_class_ids: []
+    obstacle_class_ids: []

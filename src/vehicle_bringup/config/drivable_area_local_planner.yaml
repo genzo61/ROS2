@@ -1,0 +1,64 @@
+drivable_area_local_planner:
+  ros__parameters:
+    use_sim_time: true
+    image_topic: /perception/obstacle_mask
+    cmd_vel_topic: /cmd_vel
+    target_topic: /drivable_area/target_x
+    target_valid_topic: /drivable_area/target_valid
+    debug_image_topic: /drivable_area/debug_bev
+    publish_debug_image: true
+
+    # Perception node output:
+    # - /perception/obstacle_mask  -> input_semantics: obstacles_white
+    # - /perception/drivable_mask  -> input_semantics: drivable_white
+    input_semantics: obstacles_white
+    mono_threshold: 127
+    white_value_min: 170
+    white_sat_max: 90
+    yellow_h_min: 15
+    yellow_h_max: 42
+    yellow_sat_min: 40
+    yellow_val_min: 80
+    orange_h_min: 5
+    orange_h_max: 22
+    orange_sat_min: 90
+    orange_val_min: 80
+
+    # Order: top-left, top-right, bottom-right, bottom-left on the source image.
+    # Start here in 640x480 Gazebo and tune on RViz/debug image.
+    bev_width: 400
+    bev_height: 480
+    # Alt kesim cizgisi (Y) 310'a cekildi. Aracin govdesi %100 oraninda gorusten cikarildi.
+    # Ust koseleri de ufuk cizgisine biraz daha yaklastirdik (Y=200).
+    bev_source_points: [180.0, 200.0, 460.0, 200.0, 640.0, 310.0, 0.0, 310.0]
+    # Empty means full output rectangle.
+    bev_destination_points: []
+
+    # Inflation should be close to half vehicle width in BEV pixels.
+    inflation_radius_px: 15
+    close_kernel_px: 3
+    open_kernel_px: 0
+    connected_seed_band_px: 40
+
+    # Lookahead row = image_bottom - lookahead_offset_px.
+    lookahead_offset_px: 240
+    lookahead_search_window_px: 14
+    lookahead_min_corridor_width_px: 20
+    corridor_score_center_weight: 0.35
+    corridor_score_memory_weight: 0.55
+    target_smoothing_alpha: 0.35
+    image_center_bias_px: 0.0
+    enable_auto_mask_recovery: true
+
+    # Starting gains:
+    # kp 1.2-1.6, kd 0.12-0.22, lookahead_offset 120-170 are good first sweeps.
+    control_rate_hz: 20.0
+    target_timeout_sec: 0.35
+    steering_kp: 2.50
+    steering_kd: 0.18
+    max_angular_z: 2.00
+    min_linear_x: 0.25
+    max_linear_x: 0.85
+    speed_reduction_gain: 1.50
+    narrow_corridor_threshold_px: 85
+    narrow_corridor_speed: 0.22

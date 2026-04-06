@@ -1,0 +1,105 @@
+lane_camera_subscriber:
+  ros__parameters:
+    use_sim_time: true
+    input_image_topic: /front_camera/image_raw
+    input_topic_candidates:
+      - /front_camera/image_raw
+      - /camera/image_raw
+      - /teknofest_araci/front_camera/image_raw
+      - /teknofest_araci/camera/image_raw
+    auto_discover_image_topic: false
+    watchdog_seconds: 2.5
+    topic_scan_period_seconds: 2.0
+    output_image_topic: /lane/camera/image_raw
+    ignored_topic_prefixes:
+      - /lane/
+
+lane_yolo_inference:
+  ros__parameters:
+    use_sim_time: true
+    image_topic: /lane/camera/image_raw
+    detections_topic: /lane/detections
+    debug_image_topic: /lane/yolo/debug
+    publish_debug_image: true
+    model_path: "auto"
+    confidence_threshold: 0.12
+    iou_threshold: 0.40
+    left_labels: ["left_lane", "lane_left", "left"]
+    right_labels: ["right_lane", "lane_right", "right"]
+    enable_fallback_lane_extraction: true
+    fallback_roi_top_ratio: 0.55
+    fallback_white_value_min: 170
+    fallback_white_sat_max: 80
+    fallback_yellow_h_min: 15
+    fallback_yellow_h_max: 40
+    fallback_min_peak_pixels: 100
+
+lane_detection_parser:
+  ros__parameters:
+    use_sim_time: true
+    detections_topic: /lane/detections
+    input_image_topic: /lane/camera/image_raw
+    mask_image_topic: /lane/mask_image
+    lane_error_topic: /lane/error
+    lane_heading_error_topic: /lane/heading_error
+    lane_available_topic: /lane/available
+    lane_valid_topic: /lane/valid
+    left_lane_topic: /lane/left
+    right_lane_topic: /lane/right
+    lane_deviation_px_topic: /lane/deviation_px
+    near_error_topic: /lane/near_error
+    far_error_topic: /lane/far_error
+    curve_indicator_topic: /lane/curve_indicator
+    lane_confidence_topic: /lane/confidence
+    lane_available_confidence_min: 0.24
+    debug_image_topic: /lane/debug
+    publish_debug_image: true
+    expected_lane_width_px: 300.0
+    smoothing_alpha: 0.20
+    fused_error_smoothing_alpha: 0.12
+    single_lane_error_scale: 0.55
+    adaptive_lane_width_alpha: 0.18
+    single_lane_bias_px: 0.0
+    single_lane_left_bias_px: 0.0
+    single_lane_right_bias_px: 0.0
+    single_lane_center_smoothing_alpha: 0.24
+    single_lane_confidence_floor: 0.42
+    single_lane_projected_confidence_floor: 0.50
+    min_lane_width_px: 220.0
+    max_lane_width_px: 380.0
+    single_lane_max_abs_error: 0.16
+    single_lane_valid_abs_error: 0.14
+    single_lane_low_conf_threshold: 0.52
+    single_lane_low_conf_max_abs_error: 0.12
+    single_lane_low_conf_max_heading_error: 0.08
+    two_lane_max_abs_error: 0.35
+    near_roi_y_start: 0.76
+    near_roi_y_end: 0.94
+    far_roi_y_start: 0.34
+    far_roi_y_end: 0.54
+    w_near: 0.70
+    w_far: 0.30
+    near_search_half_width_ratio: 0.14
+    far_search_half_width_ratio: 0.24
+    side_hist_margin_px: 28
+    sample_bbox_margin_px: 18
+    sample_min_pixels: 24
+    sample_min_peak_pixels: 5
+    sample_min_rows: 4
+    side_hist_min_pixels: 28
+    side_hist_min_peak_pixels: 6
+    mask_open_kernel_px: 3
+    mask_dilate_kernel_px: 5
+    prefer_model_mask: true
+    model_mask_min_pixels: 700
+    white_value_min: 170
+    white_sat_max: 80
+    yellow_h_min: 15
+    yellow_h_max: 40
+    publish_debug_logs: true
+    curve_memory_frames: 8
+    max_predict_duration: 2.5
+    decay_start: 1.2
+    max_predicted_error: 0.08
+    curve_warning_threshold: 0.10
+    curve_warning_consecutive: 3

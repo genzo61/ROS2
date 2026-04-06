@@ -13,13 +13,12 @@ from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 import os
-import shlex
 
 
 def generate_launch_description():
     pkg_share = get_package_share_directory('vehicle_bringup')
     ekf_config = os.path.join(get_package_share_directory('vehicle_localization'), 'config', 'ekf.yaml')
-    world_file = os.path.join(pkg_share, 'worlds', 'amerika_parkur')
+    default_world = os.path.join(pkg_share, 'worlds', 'amerika_parkur')
     urdf_file = os.path.expanduser(
         '~/turtlebot3_ws/src/turtlebot3_simulations/turtlebot3_gazebo/urdf/my_robot_amerika.urdf'
     )
@@ -47,6 +46,7 @@ def generate_launch_description():
     use_local_ekf = LaunchConfiguration('use_local_ekf')
     nav2_odom_topic = LaunchConfiguration('nav2_odom_topic')
     cleanup_stale_gazebo = LaunchConfiguration('cleanup_stale_gazebo')
+    world_file = LaunchConfiguration('world')
 
     gps_stack_condition = IfCondition(
         PythonExpression(
@@ -107,7 +107,7 @@ def generate_launch_description():
         cmd=[
             'bash',
             '-lc',
-            (
+            [
                 'pkill -TERM gzserver || true; '
                 'pkill -TERM gzclient || true; '
                 'pkill -TERM gazebo || true; '
@@ -115,9 +115,10 @@ def generate_launch_description():
                 'pkill -KILL gzserver || true; '
                 'pkill -KILL gzclient || true; '
                 'pkill -KILL gazebo || true; '
-                f'exec gazebo --verbose {shlex.quote(world_file)} '
-                '-s libgazebo_ros_init.so -s libgazebo_ros_factory.so'
-            ),
+                'exec gazebo --verbose ',
+                world_file,
+                ' -s libgazebo_ros_init.so -s libgazebo_ros_factory.so',
+            ],
         ],
         output='screen',
     )
@@ -148,6 +149,11 @@ def generate_launch_description():
         DeclareLaunchArgument('spawn_y', default_value='-4.701300'),
         DeclareLaunchArgument('spawn_z', default_value='0.018912'),
         DeclareLaunchArgument('spawn_yaw', default_value='1.618679'),
+        DeclareLaunchArgument(
+            'world',
+            default_value=default_world,
+            description='Absolute path to the Gazebo world file.',
+        ),
         DeclareLaunchArgument(
             'mode',
             default_value='local_nav2_mode',
@@ -324,9 +330,10 @@ def generate_launch_description():
             ]
         ),
 
-        # Stage 4b (GPS stack mode): delayed Nav2 start after global localization settles.
+        # Stage 4b (GPS stack mode): start Nav2 after GPS stack settles, but
+        # without the long delay that makes the vehicle appear idle in simulation.
         TimerAction(
-            period=45.0,
+            period=30.0,
             condition=nav2_with_gps_condition,
             actions=[
                 IncludeLaunchDescription(

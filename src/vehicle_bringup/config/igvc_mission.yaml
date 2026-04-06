@@ -4,22 +4,63 @@ igvc_waypoint_navigator:
     waypoint_altitude: 0.0
     wait_for_nav2_seconds: 60.0
     wait_for_fromll_seconds: 60.0
-    wait_for_tf_seconds: 5.0
+    wait_for_tf_seconds: 30.0
     feedback_interval_seconds: 2.0
 
     # Anchor calibration (GPS -> map offset)
     anchor_gps: [40.810000, 29.360000]
-    # Match Gazebo spawn origin so GPS->map conversion is in the same frame
-    anchor_map: [-16.42, -6.153]
+    # In gps_nav2_mode the Nav2 map frame starts near the robot's initial pose,
+    # so the GPS anchor should map close to (0, 0) instead of Gazebo world coords.
+    anchor_map: [0.0, 0.0]
 
     # Safety / behavior
     skip_waypoint_distance_m: 1.0
+    arrival_check_distance_m: 0.8
     enforce_goal_distance_check: true
     max_goal_distance_m: 80.0
 
-    # Flattened [lat1, lon1, lat2, lon2, ...]
-    gps_waypoints: [40.810000, 29.360000, 40.810050, 29.360080]
+    # Lane blending
+    lane_kp_valid: 0.24
+    lane_kp_predicted: 0.12
+    lane_weight_valid: 0.24
+    lane_weight_predicted: 0.12
+    nav2_weight_valid: 0.76
+    nav2_weight_predicted: 0.88
+    lane_max_angular: 0.16
+    max_angular_z: 1.2
+    blend_publish_hz: 15.0
+    min_active_linear_speed: 0.12
+    lane_confidence_min: 0.68
+    predicted_lane_weight_scale: 0.60
+    curve_warning_lane_weight_scale: 0.00
+    near_goal_lane_weight_scale: 0.10
+    near_goal_distance_m: 1.6
+    lane_error_deadband: 0.02
+    angular_smoothing_alpha: 0.35
+    max_lane_error_for_blend: 0.08
+    max_curve_indicator_for_blend: 0.08
 
-    # Optional direct map path (x1, y1, x2, y2, ...).
-    # If non-empty, navigator ignores gps_waypoints and follows these points.
-    map_waypoints: []
+    # GPS waypoint list disabled in Gazebo; we follow an explicit loop in map coordinates.
+    gps_waypoints: []
+
+    # Approximate centerline loop for the amerika_parkur Gazebo map.
+    # Coordinates are expressed in the map frame used by gps_nav2_mode,
+    # whose origin starts near the robot spawn pose in simulation.
+    map_waypoints: [
+       0.239,  6.201,
+       0.539, 12.201,
+       3.239, 15.701,
+       9.239, 16.501,
+      16.239, 16.501,
+      23.239, 15.901,
+      29.039, 15.001,
+      31.439, 11.201,
+      31.639,  4.701,
+      31.239, -2.299,
+      28.539, -6.299,
+      21.239, -7.099,
+      13.239, -7.099,
+       5.739, -6.499,
+       1.439, -3.799,
+       0.439,  2.201
+    ]

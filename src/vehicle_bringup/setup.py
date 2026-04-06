@@ -33,10 +33,14 @@ setup(
         'console_scripts': [
             'igvc_waypoint_navigator = vehicle_bringup.igvc_waypoint_navigator:main',
             'yaris_pilotu = vehicle_bringup.yaris_pilotu:main',
+            'cmd_fusion_node = vehicle_bringup.cmd_fusion_node:main',
             'lane_tracker = vehicle_bringup.lane_tracker:main',
+            'lane_to_pc2 = vehicle_bringup.lane_to_pc2:main',
             'lane_camera_subscriber = vehicle_bringup.lane_camera_subscriber:main',
             'lane_yolo_inference = vehicle_bringup.lane_yolo_inference:main',
             'lane_detection_parser = vehicle_bringup.lane_detection_parser:main',
+            'drivable_area_local_planner = vehicle_bringup.drivable_area_local_planner:main',
+            'segmentation_perception_node = vehicle_bringup.segmentation_perception_node:main',
         ],
     },
 )

@@ -26,7 +26,6 @@ def generate_launch_description():
         'behavior_server',
         'bt_navigator',
         'waypoint_follower',
-        'velocity_smoother',
     ]
 
     return LaunchDescription([
@@ -81,19 +80,6 @@ def generate_launch_description():
             parameters=[configured_params, {'use_sim_time': True}],
         ),
 
-        # Velocity Smoother
-        Node(
-            package='nav2_velocity_smoother',
-            executable='velocity_smoother',
-            name='velocity_smoother',
-            output='screen',
-            parameters=[configured_params, {'use_sim_time': True}],
-            remappings=[
-                ('cmd_vel', 'cmd_vel_nav'),
-                ('cmd_vel_smoothed', 'cmd_vel'),
-            ],
-        ),
-
         # Lifecycle Manager
         Node(
             package='nav2_lifecycle_manager',
@@ -105,7 +91,7 @@ def generate_launch_description():
                 'autostart': True,
                 'node_names': lifecycle_nodes,
                 'bond_timeout': 15.0,
-                'service_timeout': 30.0,
+                'service_timeout': 30000,
                 'attempt_respawn_reconnection': False,
                 'bond_respawn_max_duration': 10.0,
             }],

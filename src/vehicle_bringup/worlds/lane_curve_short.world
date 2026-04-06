@@ -1,0 +1,299 @@
+<?xml version="1.0" ?>
+<sdf version='1.7'>
+  <world name='lane_curve_short'>
+    <light name='sun' type='directional'>
+      <cast_shadows>1</cast_shadows>
+      <pose>0 0 10 0 -0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.35 0.1 -0.93</direction>
+    </light>
+
+    <gravity>0 0 -9.8</gravity>
+    <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
+    <atmosphere type='adiabatic'/>
+    <physics type='ode'>
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+
+    <scene>
+      <ambient>0.45 0.45 0.45 1</ambient>
+      <background>0.82 0.86 0.9 1</background>
+      <shadows>1</shadows>
+    </scene>
+
+    <audio>
+      <device>default</device>
+    </audio>
+
+    <wind/>
+
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <latitude_deg>40.8069</latitude_deg>
+      <longitude_deg>29.3579</longitude_deg>
+      <elevation>0</elevation>
+      <heading_deg>0</heading_deg>
+    </spherical_coordinates>
+
+    <model name='ground_plane'>
+      <static>1</static>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>80 80</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name='visual'>
+          <cast_shadows>0</cast_shadows>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>80 80</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.18 0.18 0.18 1</ambient>
+            <diffuse>0.2 0.2 0.2 1</diffuse>
+            <specular>0.02 0.02 0.02 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='lane_markings_curve'>
+      <static>1</static>
+      <link name='lane_lines'>
+        <visual name='left_straight_in'>
+          <pose>-5.0 0.9 0.006 0 0 0.0</pose>
+          <geometry>
+            <box>
+              <size>6.0 0.18 0.01</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.92 0.78 0.12 1</ambient>
+            <diffuse>0.92 0.78 0.12 1</diffuse>
+          </material>
+        </visual>
+
+        <visual name='right_straight_in'>
+          <pose>-5.0 -0.9 0.006 0 0 0.0</pose>
+          <geometry>
+            <box>
+              <size>6.0 0.18 0.01</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.98 0.98 0.98 1</ambient>
+            <diffuse>0.98 0.98 0.98 1</diffuse>
+          </material>
+        </visual>
+
+        <visual name='left_arc_1'>
+          <pose>-1.465 0.935 0.006 0 0 0.131</pose>
+          <geometry><box><size>1.073 0.18 0.01</size></box></geometry>
+          <material><ambient>0.92 0.78 0.12 1</ambient><diffuse>0.92 0.78 0.12 1</diffuse></material>
+        </visual>
+        <visual name='left_arc_2'>
+          <pose>-0.431 1.212 0.006 0 0 0.393</pose>
+          <geometry><box><size>1.073 0.18 0.01</size></box></geometry>
+          <material><ambient>0.92 0.78 0.12 1</ambient><diffuse>0.92 0.78 0.12 1</diffuse></material>
+        </visual>
+        <visual name='left_arc_3'>
+          <pose>0.496 1.747 0.006 0 0 0.654</pose>
+          <geometry><box><size>1.073 0.18 0.01</size></box></geometry>
+          <material><ambient>0.92 0.78 0.12 1</ambient><diffuse>0.92 0.78 0.12 1</diffuse></material>
+        </visual>
+        <visual name='left_arc_4'>
+          <pose>1.253 2.504 0.006 0 0 0.916</pose>
+          <geometry><box><size>1.073 0.18 0.01</size></box></geometry>
+          <material><ambient>0.92 0.78 0.12 1</ambient><diffuse>0.92 0.78 0.12 1</diffuse></material>
+        </visual>
+        <visual name='left_arc_5'>
+          <pose>1.788 3.431 0.006 0 0 1.178</pose>
+          <geometry><box><size>1.073 0.18 0.01</size></box></geometry>
+          <material><ambient>0.92 0.78 0.12 1</ambient><diffuse>0.92 0.78 0.12 1</diffuse></material>
+        </visual>
+        <visual name='left_arc_6'>
+          <pose>2.065 4.465 0.006 0 0 1.440</pose>
+          <geometry><box><size>1.073 0.18 0.01</size></box></geometry>
+          <material><ambient>0.92 0.78 0.12 1</ambient><diffuse>0.92 0.78 0.12 1</diffuse></material>
+        </visual>
+
+        <visual name='right_arc_1'>
+          <pose>-1.230 -0.850 0.006 0 0 0.131</pose>
+          <geometry><box><size>1.545 0.18 0.01</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse></material>
+        </visual>
+        <visual name='right_arc_2'>
+          <pose>0.258 -0.451 0.006 0 0 0.393</pose>
+          <geometry><box><size>1.545 0.18 0.01</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse></material>
+        </visual>
+        <visual name='right_arc_3'>
+          <pose>1.592 0.319 0.006 0 0 0.654</pose>
+          <geometry><box><size>1.545 0.18 0.01</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse></material>
+        </visual>
+        <visual name='right_arc_4'>
+          <pose>2.681 1.408 0.006 0 0 0.916</pose>
+          <geometry><box><size>1.545 0.18 0.01</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse></material>
+        </visual>
+        <visual name='right_arc_5'>
+          <pose>3.451 2.742 0.006 0 0 1.178</pose>
+          <geometry><box><size>1.545 0.18 0.01</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse></material>
+        </visual>
+        <visual name='right_arc_6'>
+          <pose>3.850 4.230 0.006 0 0 1.440</pose>
+          <geometry><box><size>1.545 0.18 0.01</size></box></geometry>
+          <material><ambient>0.98 0.98 0.98 1</ambient><diffuse>0.98 0.98 0.98 1</diffuse></material>
+        </visual>
+
+        <visual name='left_straight_out'>
+          <pose>2.1 7.5 0.006 0 0 1.571</pose>
+          <geometry>
+            <box>
+              <size>5.0 0.18 0.01</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.92 0.78 0.12 1</ambient>
+            <diffuse>0.92 0.78 0.12 1</diffuse>
+          </material>
+        </visual>
+
+        <visual name='right_straight_out'>
+          <pose>3.9 7.5 0.006 0 0 1.571</pose>
+          <geometry>
+            <box>
+              <size>5.0 0.18 0.01</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.98 0.98 0.98 1</ambient>
+            <diffuse>0.98 0.98 0.98 1</diffuse>
+          </material>
+        </visual>
+
+        <visual name='start_line'>
+          <pose>-8.0 0.0 0.006 0 0 0.0</pose>
+          <geometry>
+            <box>
+              <size>0.2 2.2 0.01</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.95 0.8 0.1 1</ambient>
+            <diffuse>0.95 0.8 0.1 1</diffuse>
+          </material>
+        </visual>
+
+        <visual name='finish_line'>
+          <pose>3.0 10.0 0.006 0 0 1.571</pose>
+          <geometry>
+            <box>
+              <size>0.2 2.2 0.01</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.9 0.2 1</ambient>
+            <diffuse>0.2 0.9 0.2 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='lane_bounds_curve'>
+      <static>1</static>
+      <link name='bounds'>
+        <collision name='left_bound_straight_in'>
+          <pose>-5.0 1.55 0.08 0 0 0.0</pose>
+          <geometry><box><size>6.0 0.08 0.16</size></box></geometry>
+        </collision>
+        <visual name='left_bound_straight_in_v'>
+          <pose>-5.0 1.55 0.08 0 0 0.0</pose>
+          <geometry><box><size>6.0 0.08 0.16</size></box></geometry>
+          <material><ambient>0.75 0.18 0.18 1</ambient><diffuse>0.75 0.18 0.18 1</diffuse></material>
+        </visual>
+
+        <collision name='right_bound_straight_in'>
+          <pose>-5.0 -1.55 0.08 0 0 0.0</pose>
+          <geometry><box><size>6.0 0.08 0.16</size></box></geometry>
+        </collision>
+        <visual name='right_bound_straight_in_v'>
+          <pose>-5.0 -1.55 0.08 0 0 0.0</pose>
+          <geometry><box><size>6.0 0.08 0.16</size></box></geometry>
+          <material><ambient>0.75 0.18 0.18 1</ambient><diffuse>0.75 0.18 0.18 1</diffuse></material>
+        </visual>
+
+        <collision name='left_bound_arc_1'><pose>-1.550 1.580 0.08 0 0 0.131</pose><geometry><box><size>0.903 0.08 0.16</size></box></geometry></collision>
+        <visual name='left_bound_arc_1_v'><pose>-1.550 1.580 0.08 0 0 0.131</pose><geometry><box><size>0.903 0.08 0.16</size></box></geometry><material><ambient>0.75 0.18 0.18 1</ambient><diffuse>0.75 0.18 0.18 1</diffuse></material></visual>
+        <collision name='left_bound_arc_2'><pose>-0.680 1.813 0.08 0 0 0.393</pose><geometry><box><size>0.903 0.08 0.16</size></box></geometry></collision>
+        <visual name='left_bound_arc_2_v'><pose>-0.680 1.813 0.08 0 0 0.393</pose><geometry><box><size>0.903 0.08 0.16</size></box></geometry><material><ambient>0.75 0.18 0.18 1</ambient><diffuse>0.75 0.18 0.18 1</diffuse></material></visual>
+        <collision name='left_bound_arc_3'><pose>0.100 2.263 0.08 0 0 0.654</pose><geometry><box><size>0.903 0.08 0.16</size></box></geometry></collision>
+        <visual name='left_bound_arc_3_v'><pose>0.100 2.263 0.08 0 0 0.654</pose><geometry><box><size>0.903 0.08 0.16</size></box></geometry><material><ambient>0.75 0.18 0.18 1</ambient><diffuse>0.75 0.18 0.18 1</diffuse></material></visual>
+        <collision name='left_bound_arc_4'><pose>0.737 2.900 0.08 0 0 0.916</pose><geometry><box><size>0.903 0.08 0.16</size></box></geometry></collision>
+        <visual name='left_bound_arc_4_v'><pose>0.737 2.900 0.08 0 0 0.916</pose><geometry><box><size>0.903 0.08 0.16</size></box></geometry><material><ambient>0.75 0.18 0.18 1</ambient><diffuse>0.75 0.18 0.18 1</diffuse></material></visual>
+        <collision name='left_bound_arc_5'><pose>1.187 3.680 0.08 0 0 1.178</pose><geometry><box><size>0.903 0.08 0.16</size></box></geometry></collision>
+        <visual name='left_bound_arc_5_v'><pose>1.187 3.680 0.08 0 0 1.178</pose><geometry><box><size>0.903 0.08 0.16</size></box></geometry><material><ambient>0.75 0.18 0.18 1</ambient><diffuse>0.75 0.18 0.18 1</diffuse></material></visual>
+        <collision name='left_bound_arc_6'><pose>1.420 4.550 0.08 0 0 1.440</pose><geometry><box><size>0.903 0.08 0.16</size></box></geometry></collision>
+        <visual name='left_bound_arc_6_v'><pose>1.420 4.550 0.08 0 0 1.440</pose><geometry><box><size>0.903 0.08 0.16</size></box></geometry><material><ambient>0.75 0.18 0.18 1</ambient><diffuse>0.75 0.18 0.18 1</diffuse></material></visual>
+
+        <collision name='right_bound_arc_1'><pose>-1.145 -1.494 0.08 0 0 0.131</pose><geometry><box><size>1.715 0.08 0.16</size></box></geometry></collision>
+        <visual name='right_bound_arc_1_v'><pose>-1.145 -1.494 0.08 0 0 0.131</pose><geometry><box><size>1.715 0.08 0.16</size></box></geometry><material><ambient>0.75 0.18 0.18 1</ambient><diffuse>0.75 0.18 0.18 1</diffuse></material></visual>
+        <collision name='right_bound_arc_2'><pose>0.507 -1.051 0.08 0 0 0.393</pose><geometry><box><size>1.715 0.08 0.16</size></box></geometry></collision>
+        <visual name='right_bound_arc_2_v'><pose>0.507 -1.051 0.08 0 0 0.393</pose><geometry><box><size>1.715 0.08 0.16</size></box></geometry><material><ambient>0.75 0.18 0.18 1</ambient><diffuse>0.75 0.18 0.18 1</diffuse></material></visual>
+        <collision name='right_bound_arc_3'><pose>1.987 -0.196 0.08 0 0 0.654</pose><geometry><box><size>1.715 0.08 0.16</size></box></geometry></collision>
+        <visual name='right_bound_arc_3_v'><pose>1.987 -0.196 0.08 0 0 0.654</pose><geometry><box><size>1.715 0.08 0.16</size></box></geometry><material><ambient>0.75 0.18 0.18 1</ambient><diffuse>0.75 0.18 0.18 1</diffuse></material></visual>
+        <collision name='right_bound_arc_4'><pose>3.196 1.013 0.08 0 0 0.916</pose><geometry><box><size>1.715 0.08 0.16</size></box></geometry></collision>
+        <visual name='right_bound_arc_4_v'><pose>3.196 1.013 0.08 0 0 0.916</pose><geometry><box><size>1.715 0.08 0.16</size></box></geometry><material><ambient>0.75 0.18 0.18 1</ambient><diffuse>0.75 0.18 0.18 1</diffuse></material></visual>
+        <collision name='right_bound_arc_5'><pose>4.051 2.493 0.08 0 0 1.178</pose><geometry><box><size>1.715 0.08 0.16</size></box></geometry></collision>
+        <visual name='right_bound_arc_5_v'><pose>4.051 2.493 0.08 0 0 1.178</pose><geometry><box><size>1.715 0.08 0.16</size></box></geometry><material><ambient>0.75 0.18 0.18 1</ambient><diffuse>0.75 0.18 0.18 1</diffuse></material></visual>
+        <collision name='right_bound_arc_6'><pose>4.494 4.145 0.08 0 0 1.440</pose><geometry><box><size>1.715 0.08 0.16</size></box></geometry></collision>
+        <visual name='right_bound_arc_6_v'><pose>4.494 4.145 0.08 0 0 1.440</pose><geometry><box><size>1.715 0.08 0.16</size></box></geometry><material><ambient>0.75 0.18 0.18 1</ambient><diffuse>0.75 0.18 0.18 1</diffuse></material></visual>
+
+        <collision name='left_bound_straight_out'>
+          <pose>1.45 7.5 0.08 0 0 1.571</pose>
+          <geometry><box><size>5.0 0.08 0.16</size></box></geometry>
+        </collision>
+        <visual name='left_bound_straight_out_v'>
+          <pose>1.45 7.5 0.08 0 0 1.571</pose>
+          <geometry><box><size>5.0 0.08 0.16</size></box></geometry>
+          <material><ambient>0.75 0.18 0.18 1</ambient><diffuse>0.75 0.18 0.18 1</diffuse></material>
+        </visual>
+
+        <collision name='right_bound_straight_out'>
+          <pose>4.55 7.5 0.08 0 0 1.571</pose>
+          <geometry><box><size>5.0 0.08 0.16</size></box></geometry>
+        </collision>
+        <visual name='right_bound_straight_out_v'>
+          <pose>4.55 7.5 0.08 0 0 1.571</pose>
+          <geometry><box><size>5.0 0.08 0.16</size></box></geometry>
+          <material><ambient>0.75 0.18 0.18 1</ambient><diffuse>0.75 0.18 0.18 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <gui fullscreen='0'>
+      <camera name='user_camera'>
+        <pose>-2.0 -12.5 12.0 0 0.72 1.20</pose>
+        <view_controller>orbit</view_controller>
+        <projection_type>perspective</projection_type>
+      </camera>
+    </gui>
+  </world>
+</sdf>

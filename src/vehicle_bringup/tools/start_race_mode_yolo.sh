@@ -23,5 +23,5 @@ exec ros2 launch vehicle_bringup yaris_autonomy.launch.py \
   enable_lane_yolo:=true \
   lane_model_path:=auto \
   route_enabled:=false \
-  lane_only_speed:=0.40 \
+  lane_only_speed:=0.78 \
   "$@"

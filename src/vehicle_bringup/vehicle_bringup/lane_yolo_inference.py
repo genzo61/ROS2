@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 
+import inspect
 import json
 import os
+import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 import rclpy
+from cv_bridge import CvBridge, CvBridgeError
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
@@ -27,6 +30,7 @@ class LaneYoloInference(Node):
         self.declare_parameter('iou_threshold', 0.45)
         self.declare_parameter('left_labels', ['left_lane', 'lane_left', 'left'])
         self.declare_parameter('right_labels', ['right_lane', 'lane_right', 'right'])
+        self.declare_parameter('allow_fallback', True)
         self.declare_parameter('enable_fallback_lane_extraction', True)
         self.declare_parameter('fallback_roi_top_ratio', 0.55)
         self.declare_parameter('fallback_white_value_min', 170)
@@ -45,7 +49,10 @@ class LaneYoloInference(Node):
         self.iou_th = float(self.get_parameter('iou_threshold').value)
         self.left_labels = {str(label).lower() for label in self.get_parameter('left_labels').value}
         self.right_labels = {str(label).lower() for label in self.get_parameter('right_labels').value}
-        self.enable_fallback = bool(self.get_parameter('enable_fallback_lane_extraction').value)
+        self.allow_fallback = bool(self.get_parameter('allow_fallback').value)
+        self.enable_fallback = (
+            bool(self.get_parameter('enable_fallback_lane_extraction').value) and self.allow_fallback
+        )
         self.fallback_roi_top_ratio = float(self.get_parameter('fallback_roi_top_ratio').value)
         self.fallback_white_value_min = int(self.get_parameter('fallback_white_value_min').value)
         self.fallback_white_sat_max = int(self.get_parameter('fallback_white_sat_max').value)
@@ -59,13 +66,19 @@ class LaneYoloInference(Node):
             depth=5,
         )
 
+        self.bridge = CvBridge()
+
         self.sub = self.create_subscription(Image, self.image_topic, self.image_callback, self.sensor_qos)
         self.detections_pub = self.create_publisher(String, detections_topic, 10)
+        self.mask_pub = self.create_publisher(Image, '/lane/mask_image', self.sensor_qos)
         self.debug_pub = self.create_publisher(Image, self.debug_image_topic, self.sensor_qos)
 
         self.model = self.load_model()
         mode = 'YOLO' if self.model is not None else 'fallback'
-        self.get_logger().info(f'Lane inference ready. mode={mode} image_topic={self.image_topic}')
+        self.get_logger().info(
+            f'Lane inference ready. mode={mode} image_topic={self.image_topic} '
+            f'allow_fallback={self.allow_fallback}'
+        )
 
     def resolve_model_path(self, requested_path: str) -> str:
         requested = requested_path.strip()
@@ -79,13 +92,16 @@ class LaneYoloInference(Node):
 
         try:
             pkg_share = get_package_share_directory('vehicle_bringup')
+            candidate_paths.append(os.path.join(pkg_share, 'models', 'segment.pt'))
             candidate_paths.append(os.path.join(pkg_share, 'models', 'best.pt'))
         except Exception:
             pass
 
         candidate_paths.extend(
             [
+                os.path.expanduser('~/turtlebot3_ws/src/vehicle_bringup/models/segment.pt'),
                 os.path.expanduser('~/turtlebot3_ws/src/vehicle_bringup/models/best.pt'),
+                os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'models', 'segment.pt')),
                 os.path.expanduser('~/turtlebot3_ws/src/best.pt'),
                 os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'models', 'best.pt')),
             ]
@@ -98,29 +114,70 @@ class LaneYoloInference(Node):
 
         return ''
 
+    def fail_or_fallback(self, message: str, exc: Optional[Exception] = None):
+        detail = message if exc is None else f'{message}: {exc}'
+        if exc is not None and 'Segment26' in str(exc):
+            detail += (
+                ' This usually means the checkpoint was saved with a different '
+                'Ultralytics build that used dynamic class aliases such as Segment26.'
+            )
+        if self.allow_fallback:
+            self.get_logger().warn(f'{detail} Fallback lane extraction will be used.')
+            return None
+        raise RuntimeError(f'{detail} allow_fallback=false, refusing to start without a valid YOLO segmentation model.')
+
     def load_model(self):
         if not self.model_path:
-            self.get_logger().warn(
-                'YOLO model_path is empty/unresolved. Fallback lane extraction will be used.'
-            )
-            return None
+            return self.fail_or_fallback('YOLO model_path is empty/unresolved')
         if not os.path.isfile(self.model_path):
-            self.get_logger().warn(
-                f'YOLO model file does not exist: {self.model_path}. Fallback lane extraction will be used.'
-            )
-            return None
+            return self.fail_or_fallback(f'YOLO model file does not exist: {self.model_path}')
         try:
+            self.install_ultralytics_compat_aliases()
+            import ultralytics  # type: ignore
             from ultralytics import YOLO  # type: ignore
         except Exception as exc:  # pragma: no cover
-            self.get_logger().warn(f'ultralytics import failed: {exc}. Fallback lane extraction will be used.')
-            return None
+            return self.fail_or_fallback('ultralytics import failed', exc)
+
+        self.get_logger().info(
+            'Loading YOLO lane model '
+            f'python_executable={sys.executable} '
+            f'ultralytics_version={getattr(ultralytics, "__version__", "unknown")} '
+            f'model_path={self.model_path}'
+        )
         try:
             model = YOLO(self.model_path)
-            self.get_logger().info(f'YOLO model loaded: {self.model_path}')
+            task = str(getattr(model, 'task', 'unknown')).strip().lower() or 'unknown'
+            model_impl = type(getattr(model, 'model', None)).__name__
+            self.get_logger().info(
+                'YOLO lane model loaded successfully '
+                f'python_executable={sys.executable} '
+                f'ultralytics_version={getattr(ultralytics, "__version__", "unknown")} '
+                f'model_path={self.model_path} '
+                f'task={task} '
+                f'model_impl={model_impl}'
+            )
+            if task != 'segment':
+                return self.fail_or_fallback(
+                    f'Loaded model task is "{task}", but lane_yolo_inference requires a segmentation model'
+                )
             return model
         except Exception as exc:  # pragma: no cover
-            self.get_logger().warn(f'YOLO model load failed: {exc}. Fallback lane extraction will be used.')
-            return None
+            return self.fail_or_fallback('YOLO model load failed', exc)
+
+    @staticmethod
+    def install_ultralytics_compat_aliases() -> None:
+        # Older checkpoints can pickle dynamically suffixed class names like
+        # Segment26 / Proto26. Current ultralytics exposes only the base names.
+        from ultralytics.nn.modules import block, conv, head, transformer  # type: ignore
+
+        for module in (head, block, conv, transformer):
+            for name, obj in inspect.getmembers(module, inspect.isclass):
+                if getattr(obj, '__module__', '') != module.__name__:
+                    continue
+                for idx in range(100):
+                    alias = f'{name}{idx}'
+                    if not hasattr(module, alias):
+                        setattr(module, alias, obj)
 
     @staticmethod
     def image_to_bgr(msg: Image) -> Optional[np.ndarray]:
@@ -169,6 +226,14 @@ class LaneYoloInference(Node):
         msg.data = frame.tobytes()
         return msg
 
+    def mono_to_image_msg(self, mask: np.ndarray, header) -> Image:
+        try:
+            msg = self.bridge.cv2_to_imgmsg(mask, encoding='mono8')
+        except CvBridgeError as exc:
+            raise RuntimeError(f'Failed to convert lane mask to ROS Image: {exc}') from exc
+        msg.header = header
+        return msg
+
     def classify_lane_side(self, label: str, cx: float, image_width: int) -> str:
         normalized = label.lower()
         if normalized in self.left_labels:
@@ -177,22 +242,25 @@ class LaneYoloInference(Node):
             return 'right'
         return 'left' if cx < (image_width * 0.5) else 'right'
 
-    def infer_with_yolo(self, frame: np.ndarray) -> List[Dict[str, Any]]:
+    def infer_with_yolo(self, frame: np.ndarray) -> Tuple[List[Dict[str, Any]], np.ndarray]:
+        height, width = frame.shape[:2]
+        lane_mask = np.zeros((height, width), dtype=np.uint8)
+
         if self.model is None:
-            return []
+            return [], lane_mask
         try:
             results = self.model.predict(frame, conf=self.conf_th, iou=self.iou_th, verbose=False)
         except Exception as exc:  # pragma: no cover
             self.get_logger().warn(f'YOLO inference failed: {exc}')
-            return []
+            return [], lane_mask
 
         if not results:
-            return []
+            return [], lane_mask
 
         result = results[0]
         boxes = getattr(result, 'boxes', None)
         if boxes is None:
-            return []
+            return [], lane_mask
 
         names = getattr(self.model, 'names', {})
         detections: List[Dict[str, Any]] = []
@@ -217,7 +285,27 @@ class LaneYoloInference(Node):
                 }
             )
 
-        return detections
+        masks_obj = getattr(result, 'masks', None)
+        if masks_obj is None or not detections:
+            return detections, lane_mask
+
+        raw_masks = masks_obj.data.cpu().numpy()
+        class_ids = boxes.cls.cpu().numpy().astype(int)
+        if raw_masks.ndim == 2:
+            raw_masks = raw_masks[np.newaxis, ...]
+
+        for idx, raw_mask in enumerate(raw_masks):
+            class_id = int(class_ids[idx]) if idx < len(class_ids) else -1
+            label = str(names.get(class_id, f'class_{class_id}'))
+            if self.classify_lane_side(label, width * 0.5, width) not in ('left', 'right'):
+                continue
+
+            mask = np.where(raw_mask > 0.5, 255, 0).astype(np.uint8)
+            if mask.shape != (height, width):
+                mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
+            lane_mask = cv2.bitwise_or(lane_mask, mask)
+
+        return detections, lane_mask
 
     def fallback_lane_detections(self, frame: np.ndarray) -> List[Dict[str, Any]]:
         if not self.enable_fallback:
@@ -293,7 +381,7 @@ class LaneYoloInference(Node):
         if frame is None:
             return
 
-        detections = self.infer_with_yolo(frame)
+        detections, lane_mask = self.infer_with_yolo(frame)
         if not detections:
             detections = self.fallback_lane_detections(frame)
 
@@ -310,6 +398,11 @@ class LaneYoloInference(Node):
                     'bbox_xywh': [cx, cy, w, h],
                 }
             )
+
+        try:
+            self.mask_pub.publish(self.mono_to_image_msg(lane_mask, msg.header))
+        except RuntimeError as exc:
+            self.get_logger().warn(str(exc))
 
         payload = {
             'stamp': {'sec': int(msg.header.stamp.sec), 'nanosec': int(msg.header.stamp.nanosec)},
