@@ -21,6 +21,7 @@ lane_tracker:
     roi_top_ratio: 0.52
     white_value_min: 140
     white_sat_max: 100
+    enable_yellow_lane_mask: false
     min_peak_pixels: 28
     expected_lane_width_px: 300
     smoothing_alpha: 0.24

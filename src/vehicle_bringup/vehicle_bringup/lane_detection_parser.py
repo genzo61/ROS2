@@ -83,6 +83,7 @@ class LaneDetectionParser(Node):
         self.declare_parameter('model_mask_min_pixels', 800)
         self.declare_parameter('white_value_min', 170)
         self.declare_parameter('white_sat_max', 80)
+        self.declare_parameter('enable_yellow_lane_mask', False)
         self.declare_parameter('yellow_h_min', 15)
         self.declare_parameter('yellow_h_max', 40)
         self.declare_parameter('publish_debug_logs', True)
@@ -176,6 +177,7 @@ class LaneDetectionParser(Node):
         self.model_mask_min_pixels = int(self.get_parameter('model_mask_min_pixels').value)
         self.white_value_min = int(self.get_parameter('white_value_min').value)
         self.white_sat_max = int(self.get_parameter('white_sat_max').value)
+        self.enable_yellow_lane_mask = bool(self.get_parameter('enable_yellow_lane_mask').value)
         self.yellow_h_min = int(self.get_parameter('yellow_h_min').value)
         self.yellow_h_max = int(self.get_parameter('yellow_h_max').value)
         self.publish_debug_logs = bool(self.get_parameter('publish_debug_logs').value)
@@ -244,7 +246,8 @@ class LaneDetectionParser(Node):
             f'detections={detections_topic}, image={input_image_topic}, mask={mask_image_topic}, '
             f'lane_error={lane_error_topic}, '
             f'parser_smoothing_alpha={self.parser_smoothing_alpha:.2f} '
-            f'single_lane_biases=({self.single_lane_left_bias_px:+.1f},{self.single_lane_right_bias_px:+.1f})'
+            f'single_lane_biases=({self.single_lane_left_bias_px:+.1f},{self.single_lane_right_bias_px:+.1f}) '
+            f'enable_yellow_lane_mask={self.enable_yellow_lane_mask}'
         )
         self.run_single_lane_sign_self_test()
 
@@ -422,12 +425,14 @@ class LaneDetectionParser(Node):
             (0, 0, self.white_value_min),
             (180, self.white_sat_max, 255),
         )
-        yellow_mask = cv2.inRange(
-            hsv,
-            (self.yellow_h_min, 40, 80),
-            (self.yellow_h_max, 255, 255),
-        )
-        mask = cv2.bitwise_or(white_mask, yellow_mask)
+        mask = white_mask
+        if self.enable_yellow_lane_mask:
+            yellow_mask = cv2.inRange(
+                hsv,
+                (self.yellow_h_min, 40, 80),
+                (self.yellow_h_max, 255, 255),
+            )
+            mask = cv2.bitwise_or(mask, yellow_mask)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
         return self.postprocess_lane_mask(mask)
 

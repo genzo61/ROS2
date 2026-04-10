@@ -92,6 +92,7 @@ def build_obstacle_mask_from_bgr(
     frame_bgr: np.ndarray,
     white_value_min: int,
     white_sat_max: int,
+    enable_yellow_lane_mask: bool,
     yellow_h_min: int,
     yellow_h_max: int,
     yellow_sat_min: int,
@@ -108,17 +109,19 @@ def build_obstacle_mask_from_bgr(
         (0, 0, white_value_min),
         (180, white_sat_max, 255),
     )
-    yellow_mask = cv2.inRange(
-        hsv,
-        (yellow_h_min, yellow_sat_min, yellow_val_min),
-        (yellow_h_max, 255, 255),
-    )
     orange_mask = cv2.inRange(
         hsv,
         (orange_h_min, orange_sat_min, orange_val_min),
         (orange_h_max, 255, 255),
     )
-    obstacle_mask = cv2.bitwise_or(white_mask, yellow_mask)
+    obstacle_mask = white_mask
+    if enable_yellow_lane_mask:
+        yellow_mask = cv2.inRange(
+            hsv,
+            (yellow_h_min, yellow_sat_min, yellow_val_min),
+            (yellow_h_max, 255, 255),
+        )
+        obstacle_mask = cv2.bitwise_or(obstacle_mask, yellow_mask)
     obstacle_mask = cv2.bitwise_or(obstacle_mask, orange_mask)
     return obstacle_mask
 
@@ -129,6 +132,7 @@ def build_obstacle_mask(
     mono_threshold: int,
     white_value_min: int,
     white_sat_max: int,
+    enable_yellow_lane_mask: bool,
     yellow_h_min: int,
     yellow_h_max: int,
     yellow_sat_min: int,
@@ -147,6 +151,7 @@ def build_obstacle_mask(
             frame_bgr=image,
             white_value_min=white_value_min,
             white_sat_max=white_sat_max,
+            enable_yellow_lane_mask=enable_yellow_lane_mask,
             yellow_h_min=yellow_h_min,
             yellow_h_max=yellow_h_max,
             yellow_sat_min=yellow_sat_min,
@@ -341,6 +346,7 @@ class DrivableAreaLocalPlanner(Node):
         self.declare_parameter('mono_threshold', 127)
         self.declare_parameter('white_value_min', 170)
         self.declare_parameter('white_sat_max', 90)
+        self.declare_parameter('enable_yellow_lane_mask', False)
         self.declare_parameter('yellow_h_min', 15)
         self.declare_parameter('yellow_h_max', 42)
         self.declare_parameter('yellow_sat_min', 40)
@@ -393,6 +399,7 @@ class DrivableAreaLocalPlanner(Node):
         self.mono_threshold = int(self.get_parameter('mono_threshold').value)
         self.white_value_min = int(self.get_parameter('white_value_min').value)
         self.white_sat_max = int(self.get_parameter('white_sat_max').value)
+        self.enable_yellow_lane_mask = bool(self.get_parameter('enable_yellow_lane_mask').value)
         self.yellow_h_min = int(self.get_parameter('yellow_h_min').value)
         self.yellow_h_max = int(self.get_parameter('yellow_h_max').value)
         self.yellow_sat_min = int(self.get_parameter('yellow_sat_min').value)
@@ -493,7 +500,8 @@ class DrivableAreaLocalPlanner(Node):
         self.get_logger().info(
             'Drivable area planner ready. '
             f'image_topic={self.image_topic}, input_semantics={self.input_semantics}, '
-            f'cmd_vel_topic={cmd_vel_topic}'
+            f'cmd_vel_topic={cmd_vel_topic}, '
+            f'enable_yellow_lane_mask={self.enable_yellow_lane_mask}'
         )
 
     @staticmethod
@@ -719,6 +727,7 @@ class DrivableAreaLocalPlanner(Node):
                 mono_threshold=self.mono_threshold,
                 white_value_min=self.white_value_min,
                 white_sat_max=self.white_sat_max,
+                enable_yellow_lane_mask=self.enable_yellow_lane_mask,
                 yellow_h_min=self.yellow_h_min,
                 yellow_h_max=self.yellow_h_max,
                 yellow_sat_min=self.yellow_sat_min,

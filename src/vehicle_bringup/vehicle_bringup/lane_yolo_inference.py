@@ -35,6 +35,7 @@ class LaneYoloInference(Node):
         self.declare_parameter('fallback_roi_top_ratio', 0.55)
         self.declare_parameter('fallback_white_value_min', 170)
         self.declare_parameter('fallback_white_sat_max', 80)
+        self.declare_parameter('fallback_enable_yellow_lane_mask', False)
         self.declare_parameter('fallback_yellow_h_min', 15)
         self.declare_parameter('fallback_yellow_h_max', 40)
         self.declare_parameter('fallback_min_peak_pixels', 120)
@@ -56,6 +57,9 @@ class LaneYoloInference(Node):
         self.fallback_roi_top_ratio = float(self.get_parameter('fallback_roi_top_ratio').value)
         self.fallback_white_value_min = int(self.get_parameter('fallback_white_value_min').value)
         self.fallback_white_sat_max = int(self.get_parameter('fallback_white_sat_max').value)
+        self.fallback_enable_yellow_lane_mask = bool(
+            self.get_parameter('fallback_enable_yellow_lane_mask').value
+        )
         self.fallback_yellow_h_min = int(self.get_parameter('fallback_yellow_h_min').value)
         self.fallback_yellow_h_max = int(self.get_parameter('fallback_yellow_h_max').value)
         self.fallback_min_peak_pixels = int(self.get_parameter('fallback_min_peak_pixels').value)
@@ -77,7 +81,8 @@ class LaneYoloInference(Node):
         mode = 'YOLO' if self.model is not None else 'fallback'
         self.get_logger().info(
             f'Lane inference ready. mode={mode} image_topic={self.image_topic} '
-            f'allow_fallback={self.allow_fallback}'
+            f'allow_fallback={self.allow_fallback} '
+            f'fallback_enable_yellow_lane_mask={self.fallback_enable_yellow_lane_mask}'
         )
 
     def resolve_model_path(self, requested_path: str) -> str:
@@ -321,12 +326,14 @@ class LaneYoloInference(Node):
             (0, 0, self.fallback_white_value_min),
             (180, self.fallback_white_sat_max, 255),
         )
-        yellow_mask = cv2.inRange(
-            hsv,
-            (self.fallback_yellow_h_min, 40, 80),
-            (self.fallback_yellow_h_max, 255, 255),
-        )
-        mask = cv2.bitwise_or(white_mask, yellow_mask)
+        mask = white_mask
+        if self.fallback_enable_yellow_lane_mask:
+            yellow_mask = cv2.inRange(
+                hsv,
+                (self.fallback_yellow_h_min, 40, 80),
+                (self.fallback_yellow_h_max, 255, 255),
+            )
+            mask = cv2.bitwise_or(mask, yellow_mask)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
 
         hist = np.sum(mask[mask.shape[0] // 2 :, :] > 0, axis=0)

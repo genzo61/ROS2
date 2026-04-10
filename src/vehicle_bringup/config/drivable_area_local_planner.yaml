@@ -15,6 +15,7 @@ drivable_area_local_planner:
     mono_threshold: 127
     white_value_min: 170
     white_sat_max: 90
+    enable_yellow_lane_mask: false
     yellow_h_min: 15
     yellow_h_max: 42
     yellow_sat_min: 40

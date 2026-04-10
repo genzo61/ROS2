@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import cv2
+import faulthandler
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -13,6 +14,15 @@ from typing import List, Optional
 class LaneTracker(Node):
     def __init__(self) -> None:
         super().__init__('lane_tracker')
+        faulthandler.enable(all_threads=True)
+        try:
+            cv2.setNumThreads(1)
+        except Exception:
+            pass
+        try:
+            cv2.ocl.setUseOpenCL(False)
+        except Exception:
+            pass
 
         self.declare_parameter('image_topic', '/front_camera/image_raw')
         self.declare_parameter(
@@ -38,6 +48,7 @@ class LaneTracker(Node):
         self.declare_parameter('roi_top_ratio', 0.55)
         self.declare_parameter('white_value_min', 170)
         self.declare_parameter('white_sat_max', 80)
+        self.declare_parameter('enable_yellow_lane_mask', False)
         self.declare_parameter('min_peak_pixels', 160)
         self.declare_parameter('expected_lane_width_px', 260)
         self.declare_parameter('smoothing_alpha', 0.35)
@@ -63,12 +74,14 @@ class LaneTracker(Node):
         self.roi_top_ratio = float(self.get_parameter('roi_top_ratio').value)
         self.white_value_min = int(self.get_parameter('white_value_min').value)
         self.white_sat_max = int(self.get_parameter('white_sat_max').value)
+        self.enable_yellow_lane_mask = bool(self.get_parameter('enable_yellow_lane_mask').value)
         self.min_peak_pixels = int(self.get_parameter('min_peak_pixels').value)
         self.expected_lane_width_px = int(self.get_parameter('expected_lane_width_px').value)
         self.smoothing_alpha = float(self.get_parameter('smoothing_alpha').value)
 
         self.smoothed_error = None
         self.smoothed_heading_error = None
+        self.last_processing_warn_ns = 0
 
         self.sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -96,7 +109,10 @@ class LaneTracker(Node):
                 self.discover_image_topic,
             )
 
-        self.get_logger().info(f'Lane tracker ready. image_topic={self.image_topic}')
+        self.get_logger().info(
+            f'Lane tracker ready. image_topic={self.image_topic} '
+            f'enable_yellow_lane_mask={self.enable_yellow_lane_mask}'
+        )
 
     def set_image_subscription(self, topic_name: str) -> None:
         if self.image_sub is not None:
@@ -206,6 +222,8 @@ class LaneTracker(Node):
         return max(low, min(high, value))
 
     def image_to_bgr(self, msg: Image):
+        if msg.width <= 0 or msg.height <= 0:
+            return None
         encoding = msg.encoding.lower()
 
         if encoding in ('bgr8', 'rgb8'):
@@ -222,22 +240,25 @@ class LaneTracker(Node):
             return None
 
         data = np.frombuffer(msg.data, dtype=np.uint8)
-        rows = data.reshape((msg.height, msg.step))
+        required_size = int(msg.height) * int(msg.step)
+        if data.size < required_size:
+            return None
+        rows = data[:required_size].reshape((msg.height, msg.step))
         pixels = rows[:, :expected_step]
 
         if channels == 1:
             gray = pixels.reshape((msg.height, msg.width))
-            return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            return np.ascontiguousarray(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR))
 
         img = pixels.reshape((msg.height, msg.width, channels))
         if encoding == 'bgr8':
-            return img
+            return np.ascontiguousarray(img)
         if encoding == 'rgb8':
-            return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            return np.ascontiguousarray(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
         if encoding == 'bgra8':
-            return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            return np.ascontiguousarray(cv2.cvtColor(img, cv2.COLOR_BGRA2BGR))
         if encoding == 'rgba8':
-            return cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+            return np.ascontiguousarray(cv2.cvtColor(img, cv2.COLOR_RGBA2BGR))
         return None
 
     @staticmethod
@@ -253,11 +274,19 @@ class LaneTracker(Node):
         return msg
 
     def find_lane_center(self, mask: np.ndarray):
+        if mask is None or mask.ndim != 2 or mask.size == 0:
+            return None, None, None
         height, width = mask.shape
+        if height <= 1 or width <= 1:
+            return None, None, None
         half = width // 2
+        if half <= 0 or half >= width:
+            return None, None, None
 
         # Histogram over lower half of ROI where lane lines are strongest.
         hist = np.sum(mask[height // 2 :, :] > 0, axis=0)
+        if hist.size == 0:
+            return None, None, None
 
         left_idx = int(np.argmax(hist[:half]))
         right_idx = int(np.argmax(hist[half:])) + half
@@ -281,98 +310,139 @@ class LaneTracker(Node):
 
         return None, None, None
 
+    def publish_no_lane(self) -> None:
+        lane_error = 0.0
+        heading_error = 0.0
+        if self.smoothed_error is not None:
+            self.smoothed_error *= 0.95
+            lane_error = float(self.smoothed_error)
+        if self.smoothed_heading_error is not None:
+            self.smoothed_heading_error *= 0.90
+            heading_error = float(self.smoothed_heading_error)
+        self.publish_lane_state(lane_error, False, heading_error, 0.0)
+
+    def warn_processing_issue(self, detail: str) -> None:
+        now_ns = self.get_clock().now().nanoseconds
+        if now_ns - self.last_processing_warn_ns >= int(1e9):
+            self.last_processing_warn_ns = now_ns
+            self.get_logger().warn(f'lane_tracker degraded frame skipped: {detail}')
+
     def image_callback(self, msg: Image) -> None:
         self.last_image_msg_ns = self.get_clock().now().nanoseconds
         self.no_image_warned = False
 
-        frame = self.image_to_bgr(msg)
-        if frame is None:
-            return
+        try:
+            frame = self.image_to_bgr(msg)
+            if frame is None or frame.ndim != 3 or frame.shape[0] <= 2 or frame.shape[1] <= 2:
+                self.warn_processing_issue('invalid_bgr_frame')
+                self.publish_no_lane()
+                return
 
-        height, width, _ = frame.shape
-        roi_top = int(self.clamp(self.roi_top_ratio, 0.1, 0.9) * height)
-        roi = frame[roi_top:, :]
+            height, width, _ = frame.shape
+            roi_top = int(self.clamp(self.roi_top_ratio, 0.1, 0.9) * height)
+            roi_top = min(max(0, roi_top), height - 1)
+            roi = np.ascontiguousarray(frame[roi_top:, :])
+            if roi.size == 0 or roi.shape[0] <= 1 or roi.shape[1] <= 1:
+                self.warn_processing_issue('empty_roi')
+                self.publish_no_lane()
+                return
 
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+            hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
-        white_mask = cv2.inRange(
-            hsv,
-            (0, 0, self.white_value_min),
-            (180, self.white_sat_max, 255),
-        )
-        yellow_mask = cv2.inRange(hsv, (15, 40, 80), (40, 255, 255))
-        mask = cv2.bitwise_or(white_mask, yellow_mask)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-
-        center_px, left_px, right_px = self.find_lane_center(mask)
-        lane_valid = center_px is not None
-        lower_mask = mask[mask.shape[0] // 2 :, :]
-        upper_mask = mask[: mask.shape[0] // 2, :]
-        near_center_px, _, _ = self.find_lane_center(lower_mask) if lower_mask.size else (None, None, None)
-        far_center_px, _, _ = self.find_lane_center(upper_mask) if upper_mask.size else (None, None, None)
-
-        lane_error = 0.0
-        heading_error = 0.0
-        confidence = 0.0
-        if lane_valid:
-            raw_error = ((width * 0.5) - center_px) / (width * 0.5)
-            if self.smoothed_error is None:
-                self.smoothed_error = raw_error
-            else:
-                alpha = self.clamp(self.smoothing_alpha, 0.0, 1.0)
-                self.smoothed_error = alpha * raw_error + (1.0 - alpha) * self.smoothed_error
-            lane_error = float(self.smoothed_error)
-            has_both_lanes = left_px is not None and right_px is not None
-            confidence = 0.95 if has_both_lanes else 0.65
-        else:
-            if self.smoothed_error is not None:
-                self.smoothed_error *= 0.95
-                lane_error = float(self.smoothed_error)
-
-        if near_center_px is not None and far_center_px is not None:
-            raw_heading_error = (near_center_px - far_center_px) / (width * 0.5)
-            if self.smoothed_heading_error is None:
-                self.smoothed_heading_error = raw_heading_error
-            else:
-                alpha = self.clamp(self.smoothing_alpha, 0.0, 1.0)
-                self.smoothed_heading_error = (
-                    alpha * raw_heading_error + (1.0 - alpha) * self.smoothed_heading_error
-                )
-            heading_error = float(self.smoothed_heading_error)
-        elif self.smoothed_heading_error is not None:
-            self.smoothed_heading_error *= 0.90
-            heading_error = float(self.smoothed_heading_error)
-
-        self.publish_lane_state(lane_error, lane_valid, heading_error, confidence)
-
-        if self.publish_debug and self.debug_pub.get_subscription_count() > 0:
-            debug = frame.copy()
-            cv2.rectangle(debug, (0, roi_top), (width - 1, height - 1), (255, 255, 0), 1)
-
-            overlay = np.zeros_like(roi)
-            overlay[:, :, 1] = mask
-            debug_roi = debug[roi_top:, :]
-            cv2.addWeighted(overlay, 0.35, debug_roi, 0.65, 0.0, debug_roi)
-
-            image_center = int(width * 0.5)
-            cv2.line(debug, (image_center, roi_top), (image_center, height - 1), (255, 0, 0), 2)
-
-            if center_px is not None:
-                cx = int(center_px)
-                cv2.line(debug, (cx, roi_top), (cx, height - 1), (0, 255, 0), 2)
-            if left_px is not None:
-                lx = int(left_px)
-                cv2.line(debug, (lx, roi_top), (lx, height - 1), (0, 200, 200), 1)
-            if right_px is not None:
-                rx = int(right_px)
-                cv2.line(debug, (rx, roi_top), (rx, height - 1), (0, 200, 200), 1)
-
-            text = (
-                f'valid={lane_valid} err={self.clamp(lane_error, -1.0, 1.0):+.3f} '
-                f'hdg={self.clamp(heading_error, -1.0, 1.0):+.3f} conf={confidence:.2f}'
+            white_mask = cv2.inRange(
+                hsv,
+                (0, 0, self.white_value_min),
+                (180, self.white_sat_max, 255),
             )
-            cv2.putText(debug, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            self.debug_pub.publish(self.bgr_to_image_msg(debug, msg.header))
+            mask = white_mask
+            if self.enable_yellow_lane_mask:
+                yellow_mask = cv2.inRange(hsv, (15, 40, 80), (40, 255, 255))
+                mask = cv2.bitwise_or(mask, yellow_mask)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+            if mask.size == 0 or mask.shape[0] <= 1 or mask.shape[1] <= 1:
+                self.warn_processing_issue('empty_mask')
+                self.publish_no_lane()
+                return
+
+            center_px, left_px, right_px = self.find_lane_center(mask)
+            lane_valid = center_px is not None
+            lower_mask = mask[mask.shape[0] // 2 :, :]
+            upper_mask = mask[: mask.shape[0] // 2, :]
+            near_center_px, _, _ = self.find_lane_center(lower_mask) if lower_mask.size else (None, None, None)
+            far_center_px, _, _ = self.find_lane_center(upper_mask) if upper_mask.size else (None, None, None)
+
+            lane_error = 0.0
+            heading_error = 0.0
+            confidence = 0.0
+            if lane_valid:
+                raw_error = ((width * 0.5) - center_px) / max(width * 0.5, 1.0)
+                if self.smoothed_error is None:
+                    self.smoothed_error = raw_error
+                else:
+                    alpha = self.clamp(self.smoothing_alpha, 0.0, 1.0)
+                    self.smoothed_error = alpha * raw_error + (1.0 - alpha) * self.smoothed_error
+                lane_error = float(self.smoothed_error)
+                has_both_lanes = left_px is not None and right_px is not None
+                confidence = 0.95 if has_both_lanes else 0.65
+            else:
+                if self.smoothed_error is not None:
+                    self.smoothed_error *= 0.95
+                    lane_error = float(self.smoothed_error)
+
+            if near_center_px is not None and far_center_px is not None:
+                raw_heading_error = (near_center_px - far_center_px) / max(width * 0.5, 1.0)
+                if self.smoothed_heading_error is None:
+                    self.smoothed_heading_error = raw_heading_error
+                else:
+                    alpha = self.clamp(self.smoothing_alpha, 0.0, 1.0)
+                    self.smoothed_heading_error = (
+                        alpha * raw_heading_error + (1.0 - alpha) * self.smoothed_heading_error
+                    )
+                heading_error = float(self.smoothed_heading_error)
+            elif self.smoothed_heading_error is not None:
+                self.smoothed_heading_error *= 0.90
+                heading_error = float(self.smoothed_heading_error)
+
+            self.publish_lane_state(lane_error, lane_valid, heading_error, confidence)
+
+            if self.publish_debug and self.debug_pub.get_subscription_count() > 0:
+                debug = np.ascontiguousarray(frame.copy())
+                cv2.rectangle(debug, (0, roi_top), (width - 1, height - 1), (255, 255, 0), 1)
+
+                overlay = np.zeros_like(roi, dtype=np.uint8)
+                overlay[:, :, 1] = mask
+                debug_roi = np.ascontiguousarray(debug[roi_top:, :].copy())
+                blended_roi = cv2.addWeighted(overlay, 0.35, debug_roi, 0.65, 0.0)
+                debug[roi_top:, :] = blended_roi
+
+                image_center = int(width * 0.5)
+                cv2.line(debug, (image_center, roi_top), (image_center, height - 1), (255, 0, 0), 2)
+
+                if center_px is not None:
+                    cx = int(center_px)
+                    cv2.line(debug, (cx, roi_top), (cx, height - 1), (0, 255, 0), 2)
+                if left_px is not None:
+                    lx = int(left_px)
+                    cv2.line(debug, (lx, roi_top), (lx, height - 1), (0, 200, 200), 1)
+                if right_px is not None:
+                    rx = int(right_px)
+                    cv2.line(debug, (rx, roi_top), (rx, height - 1), (0, 200, 200), 1)
+
+                text = (
+                    f'valid={lane_valid} err={self.clamp(lane_error, -1.0, 1.0):+.3f} '
+                    f'hdg={self.clamp(heading_error, -1.0, 1.0):+.3f} conf={confidence:.2f}'
+                )
+                cv2.putText(debug, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                self.debug_pub.publish(self.bgr_to_image_msg(debug, msg.header))
+        except cv2.error as exc:
+            self.warn_processing_issue(f'cv2_error:{exc}')
+            self.publish_no_lane()
+        except ValueError as exc:
+            self.warn_processing_issue(f'value_error:{exc}')
+            self.publish_no_lane()
+        except Exception as exc:
+            self.warn_processing_issue(f'unexpected_error:{exc}')
+            self.publish_no_lane()
 
 
 def main(args=None) -> None:

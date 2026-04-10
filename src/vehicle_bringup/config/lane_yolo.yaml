@@ -32,6 +32,7 @@ lane_yolo_inference:
     fallback_roi_top_ratio: 0.55
     fallback_white_value_min: 170
     fallback_white_sat_max: 80
+    fallback_enable_yellow_lane_mask: false
     fallback_yellow_h_min: 15
     fallback_yellow_h_max: 40
     fallback_min_peak_pixels: 120
@@ -95,6 +96,7 @@ lane_detection_parser:
     model_mask_min_pixels: 800
     white_value_min: 170
     white_sat_max: 80
+    enable_yellow_lane_mask: false
     yellow_h_min: 15
     yellow_h_max: 40
     publish_debug_logs: true
