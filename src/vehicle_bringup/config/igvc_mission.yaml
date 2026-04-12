@@ -7,15 +7,19 @@ igvc_waypoint_navigator:
     wait_for_tf_seconds: 30.0
     feedback_interval_seconds: 2.0
 
+    waypoint_source: auto
+
     # Anchor calibration (GPS -> map offset)
     anchor_gps: [40.810000, 29.360000]
     # In gps_nav2_mode the Nav2 map frame starts near the robot's initial pose,
     # so the GPS anchor should map close to (0, 0) instead of Gazebo world coords.
     anchor_map: [0.0, 0.0]
+    map_yaw_rad: 0.0
 
     # Safety / behavior
     skip_waypoint_distance_m: 1.0
     arrival_check_distance_m: 0.8
+    waypoint_arrival_distance: 0.8
     enforce_goal_distance_check: true
     max_goal_distance_m: 80.0
 

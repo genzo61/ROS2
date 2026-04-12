@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -20,6 +21,9 @@ def generate_launch_description():
     use_local_ekf = LaunchConfiguration('use_local_ekf')
     cleanup_stale_gazebo = LaunchConfiguration('cleanup_stale_gazebo')
     base_speed = LaunchConfiguration('base_speed')
+    enable_waypoint_hint = LaunchConfiguration('enable_waypoint_hint')
+
+    waypoint_hint_condition = IfCondition(enable_waypoint_hint)
 
     sim_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(pkg_share, 'launch', 'stable_sim.launch.py')),
@@ -150,6 +154,48 @@ def generate_launch_description():
         ],
     )
 
+    waypoint_hint_node = TimerAction(
+        period=2.6,
+        condition=waypoint_hint_condition,
+        actions=[
+            Node(
+                package='vehicle_bringup',
+                executable='igvc_waypoint_navigator',
+                name='igvc_waypoint_navigator',
+                output='screen',
+                parameters=[
+                    {
+                        'use_sim_time': True,
+                        'waypoint_source': 'map',
+                        'global_frame': 'map',
+                        'base_frame': 'base_footprint',
+                        'publish_hz': 10.0,
+                        'skip_waypoint_distance_m': 0.9,
+                        'waypoint_arrival_distance': 0.8,
+                        'max_heading_error_rad': 1.2,
+                        # Centerline of lane_curve_obstacles.world, derived from lane marker geometry.
+                        'map_waypoints': [
+                            -6.5, 0.0,
+                            -4.0, 0.0,
+                            -2.0, 0.0,
+                            -0.8, 0.15,
+                             0.3, 0.55,
+                             1.2, 1.25,
+                             2.0, 2.10,
+                             2.55, 3.20,
+                             2.90, 4.50,
+                             3.0, 6.80,
+                             3.0, 9.40,
+                             3.0, 12.00,
+                             3.0, 14.50,
+                             3.0, 16.50,
+                        ],
+                    }
+                ],
+            )
+        ],
+    )
+
     fusion_node = TimerAction(
         period=3.2,
         actions=[
@@ -177,6 +223,18 @@ def generate_launch_description():
                         'single_line_avoid_obstacle_weight_scale': 1.12,
                         'waypoint_weight_with_lane': 0.0,
                         'waypoint_weight_no_lane': 0.0,
+                        'route_weight_normal_lane': 0.03,
+                        'route_weight_center_corridor': 0.015,
+                        'route_weight_single_lane': 0.10,
+                        'route_weight_no_lane': 0.18,
+                        'route_weight_pre_avoid': 0.02,
+                        'route_weight_committed_pass': 0.0,
+                        'route_weight_blocked': 0.0,
+                        'center_corridor_route_bias_cap': 0.015,
+                        'route_term_lane_clip_margin': 0.02,
+                        'heading_hint_lowpass_alpha': 0.35,
+                        'waypoint_arrival_distance': 0.8,
+                        'route_suppression_opposition_threshold': 0.03,
                         'max_angular_z': 0.50,
                         'recovery_max_angular_z': 0.34,
                         'avoid_max_angular_z': 0.88,
@@ -236,8 +294,10 @@ def generate_launch_description():
         DeclareLaunchArgument('use_local_ekf', default_value='false'),
         DeclareLaunchArgument('cleanup_stale_gazebo', default_value='true'),
         DeclareLaunchArgument('base_speed', default_value='1.05'),
+        DeclareLaunchArgument('enable_waypoint_hint', default_value='true'),
         sim_launch,
         lane_tracker_node,
         obstacle_node,
+        waypoint_hint_node,
         fusion_node,
     ])

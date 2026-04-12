@@ -19,6 +19,20 @@ def generate_launch_description():
     lane_model_path = LaunchConfiguration('lane_model_path')
     allow_lane_yolo_fallback = LaunchConfiguration('allow_lane_yolo_fallback')
     base_speed = LaunchConfiguration('base_speed')
+    waypoint_source = LaunchConfiguration('waypoint_source')
+    waypoint_weight_with_lane = LaunchConfiguration('waypoint_weight_with_lane')
+    waypoint_weight_no_lane = LaunchConfiguration('waypoint_weight_no_lane')
+    route_weight_normal_lane = LaunchConfiguration('route_weight_normal_lane')
+    route_weight_single_lane = LaunchConfiguration('route_weight_single_lane')
+    route_weight_no_lane = LaunchConfiguration('route_weight_no_lane')
+    route_weight_pre_avoid = LaunchConfiguration('route_weight_pre_avoid')
+    route_weight_committed_pass = LaunchConfiguration('route_weight_committed_pass')
+    route_weight_blocked = LaunchConfiguration('route_weight_blocked')
+    center_corridor_route_bias_cap = LaunchConfiguration('center_corridor_route_bias_cap')
+    route_term_lane_clip_margin = LaunchConfiguration('route_term_lane_clip_margin')
+    heading_hint_lowpass_alpha = LaunchConfiguration('heading_hint_lowpass_alpha')
+    waypoint_arrival_distance = LaunchConfiguration('waypoint_arrival_distance')
+    route_suppression_opposition_threshold = LaunchConfiguration('route_suppression_opposition_threshold')
 
     lane_yolo_enabled_condition = IfCondition(
         PythonExpression(["'", enable_lane_yolo, "'.lower() == 'true'"])
@@ -184,7 +198,17 @@ def generate_launch_description():
                 executable='igvc_waypoint_navigator',
                 name='igvc_waypoint_navigator',
                 output='screen',
-                parameters=[igvc_config, {'use_sim_time': True}],
+                parameters=[
+                    igvc_config,
+                    {
+                        'use_sim_time': True,
+                        'waypoint_source': ParameterValue(waypoint_source, value_type=str),
+                        'waypoint_arrival_distance': ParameterValue(
+                            waypoint_arrival_distance,
+                            value_type=float,
+                        ),
+                    },
+                ],
             )
         ],
     )
@@ -213,8 +237,58 @@ def generate_launch_description():
                         'single_line_avoid_lane_weight_scale': 0.28,
                         'avoid_obstacle_weight_scale': 1.08,
                         'single_line_avoid_obstacle_weight_scale': 1.12,
-                        'waypoint_weight_with_lane': 0.0,
-                        'waypoint_weight_no_lane': 0.0,
+                        'waypoint_weight_with_lane': ParameterValue(
+                            waypoint_weight_with_lane,
+                            value_type=float,
+                        ),
+                        'waypoint_weight_no_lane': ParameterValue(
+                            waypoint_weight_no_lane,
+                            value_type=float,
+                        ),
+                        'route_weight_normal_lane': ParameterValue(
+                            route_weight_normal_lane,
+                            value_type=float,
+                        ),
+                        'route_weight_single_lane': ParameterValue(
+                            route_weight_single_lane,
+                            value_type=float,
+                        ),
+                        'route_weight_no_lane': ParameterValue(
+                            route_weight_no_lane,
+                            value_type=float,
+                        ),
+                        'route_weight_pre_avoid': ParameterValue(
+                            route_weight_pre_avoid,
+                            value_type=float,
+                        ),
+                        'route_weight_committed_pass': ParameterValue(
+                            route_weight_committed_pass,
+                            value_type=float,
+                        ),
+                        'route_weight_blocked': ParameterValue(
+                            route_weight_blocked,
+                            value_type=float,
+                        ),
+                        'center_corridor_route_bias_cap': ParameterValue(
+                            center_corridor_route_bias_cap,
+                            value_type=float,
+                        ),
+                        'route_term_lane_clip_margin': ParameterValue(
+                            route_term_lane_clip_margin,
+                            value_type=float,
+                        ),
+                        'heading_hint_lowpass_alpha': ParameterValue(
+                            heading_hint_lowpass_alpha,
+                            value_type=float,
+                        ),
+                        'waypoint_arrival_distance': ParameterValue(
+                            waypoint_arrival_distance,
+                            value_type=float,
+                        ),
+                        'route_suppression_opposition_threshold': ParameterValue(
+                            route_suppression_opposition_threshold,
+                            value_type=float,
+                        ),
                         'max_angular_z': 0.55,
                         'recovery_max_angular_z': 0.32,
                         'avoid_max_angular_z': 0.66,
@@ -269,6 +343,76 @@ def generate_launch_description():
         DeclareLaunchArgument('lane_model_path', default_value='auto'),
         DeclareLaunchArgument('allow_lane_yolo_fallback', default_value='false'),
         DeclareLaunchArgument('base_speed', default_value='0.35'),
+        DeclareLaunchArgument(
+            'waypoint_source',
+            default_value='auto',
+            description='auto | map | gps waypoint source for RTK heading hints.',
+        ),
+        DeclareLaunchArgument(
+            'waypoint_weight_with_lane',
+            default_value='0.04',
+            description='Legacy alias kept for older launch commands; route_weight_normal_lane is authoritative.',
+        ),
+        DeclareLaunchArgument(
+            'waypoint_weight_no_lane',
+            default_value='0.22',
+            description='Legacy alias kept for older launch commands; route_weight_no_lane is authoritative.',
+        ),
+        DeclareLaunchArgument(
+            'route_weight_normal_lane',
+            default_value='0.03',
+            description='Tiny advisory route bias during strong lane following.',
+        ),
+        DeclareLaunchArgument(
+            'route_weight_single_lane',
+            default_value='0.10',
+            description='Moderate-low route bias while lane geometry is degraded.',
+        ),
+        DeclareLaunchArgument(
+            'route_weight_no_lane',
+            default_value='0.22',
+            description='Route bias during no-lane recovery when local geometry is safe.',
+        ),
+        DeclareLaunchArgument(
+            'route_weight_pre_avoid',
+            default_value='0.02',
+            description='Near-zero route bias while obstacle pre-avoidance is active.',
+        ),
+        DeclareLaunchArgument(
+            'route_weight_committed_pass',
+            default_value='0.0',
+            description='Route disabled during committed side passes.',
+        ),
+        DeclareLaunchArgument(
+            'route_weight_blocked',
+            default_value='0.0',
+            description='Route disabled during blocked or critical safety states.',
+        ),
+        DeclareLaunchArgument(
+            'center_corridor_route_bias_cap',
+            default_value='0.015',
+            description='Maximum route steering bias allowed inside a preferred center corridor.',
+        ),
+        DeclareLaunchArgument(
+            'route_term_lane_clip_margin',
+            default_value='0.02',
+            description='Lane-bound hard clip for route-derived steering contribution.',
+        ),
+        DeclareLaunchArgument(
+            'heading_hint_lowpass_alpha',
+            default_value='0.35',
+            description='Low-pass alpha for advisory route heading hints.',
+        ),
+        DeclareLaunchArgument(
+            'waypoint_arrival_distance',
+            default_value='0.8',
+            description='Distance threshold for treating the current waypoint as reached.',
+        ),
+        DeclareLaunchArgument(
+            'route_suppression_opposition_threshold',
+            default_value='0.03',
+            description='Minimum local term magnitude before opposing route bias is suppressed.',
+        ),
         lane_tracker_node,
         lane_camera_subscriber_node,
         lane_yolo_inference_node,

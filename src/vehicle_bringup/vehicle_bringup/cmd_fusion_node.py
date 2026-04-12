@@ -6,7 +6,7 @@ from typing import Optional
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
-from std_msgs.msg import Bool, Float32, Float32MultiArray, String
+from std_msgs.msg import Bool, Float32, Float32MultiArray, Int32, String
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -42,6 +42,9 @@ class CmdFusionNode(Node):
         self.declare_parameter('obstacle_blocked_center_topic', '/obstacle/debug/blocked_center')
         self.declare_parameter('obstacle_blocked_selected_side_topic', '/obstacle/debug/blocked_selected_side')
         self.declare_parameter('waypoint_heading_hint_topic', '/guidance/heading_hint')
+        self.declare_parameter('waypoint_heading_error_topic', '/guidance/heading_error')
+        self.declare_parameter('waypoint_distance_topic', '/guidance/distance_to_waypoint')
+        self.declare_parameter('waypoint_index_topic', '/guidance/waypoint_index')
         self.declare_parameter('waypoint_progress_topic', '/guidance/progress')
 
         self.declare_parameter('control_hz', 20.0)
@@ -67,6 +70,19 @@ class CmdFusionNode(Node):
         self.declare_parameter('single_line_avoid_obstacle_weight_scale', 1.12)
         self.declare_parameter('waypoint_weight_with_lane', 0.0)
         self.declare_parameter('waypoint_weight_no_lane', 0.0)
+        self.declare_parameter('route_weight_normal_lane', 0.03)
+        self.declare_parameter('route_weight_center_corridor', 0.015)
+        self.declare_parameter('route_weight_single_lane', 0.10)
+        self.declare_parameter('route_weight_no_lane', 0.22)
+        self.declare_parameter('route_weight_pre_avoid', 0.02)
+        self.declare_parameter('route_weight_committed_pass', 0.0)
+        self.declare_parameter('route_weight_blocked', 0.0)
+        self.declare_parameter('center_corridor_route_bias_cap', 0.015)
+        self.declare_parameter('route_term_lane_clip_margin', 0.02)
+        self.declare_parameter('heading_hint_lowpass_alpha', 0.35)
+        self.declare_parameter('waypoint_arrival_distance', 0.8)
+        self.declare_parameter('route_suppression_opposition_threshold', 0.03)
+        self.declare_parameter('local_curvature_speed_reduction_max', 0.22)
         self.declare_parameter('max_angular_z', 0.55)
         self.declare_parameter('recovery_max_angular_z', 0.35)
         self.declare_parameter('avoid_max_angular_z', 0.72)
@@ -174,6 +190,9 @@ class CmdFusionNode(Node):
             self.get_parameter('obstacle_blocked_selected_side_topic').value
         )
         waypoint_heading_hint_topic = str(self.get_parameter('waypoint_heading_hint_topic').value)
+        waypoint_heading_error_topic = str(self.get_parameter('waypoint_heading_error_topic').value)
+        waypoint_distance_topic = str(self.get_parameter('waypoint_distance_topic').value)
+        waypoint_index_topic = str(self.get_parameter('waypoint_index_topic').value)
         waypoint_progress_topic = str(self.get_parameter('waypoint_progress_topic').value)
 
         self.base_speed = float(self.get_parameter('base_speed').value)
@@ -212,6 +231,69 @@ class CmdFusionNode(Node):
         )
         self.waypoint_weight_with_lane = float(self.get_parameter('waypoint_weight_with_lane').value)
         self.waypoint_weight_no_lane = float(self.get_parameter('waypoint_weight_no_lane').value)
+        self.route_weight_normal_lane = clamp(
+            float(self.get_parameter('route_weight_normal_lane').value),
+            0.0,
+            0.25,
+        )
+        self.route_weight_center_corridor = clamp(
+            float(self.get_parameter('route_weight_center_corridor').value),
+            0.0,
+            self.route_weight_normal_lane,
+        )
+        self.route_weight_single_lane = clamp(
+            float(self.get_parameter('route_weight_single_lane').value),
+            0.0,
+            0.35,
+        )
+        self.route_weight_no_lane = clamp(
+            float(self.get_parameter('route_weight_no_lane').value),
+            0.0,
+            0.45,
+        )
+        self.route_weight_pre_avoid = clamp(
+            float(self.get_parameter('route_weight_pre_avoid').value),
+            0.0,
+            self.route_weight_single_lane,
+        )
+        self.route_weight_committed_pass = clamp(
+            float(self.get_parameter('route_weight_committed_pass').value),
+            0.0,
+            0.02,
+        )
+        self.route_weight_blocked = clamp(
+            float(self.get_parameter('route_weight_blocked').value),
+            0.0,
+            0.01,
+        )
+        self.center_corridor_route_bias_cap = clamp(
+            float(self.get_parameter('center_corridor_route_bias_cap').value),
+            0.0,
+            0.05,
+        )
+        self.route_term_lane_clip_margin = clamp(
+            float(self.get_parameter('route_term_lane_clip_margin').value),
+            0.0,
+            0.08,
+        )
+        self.heading_hint_lowpass_alpha = clamp(
+            float(self.get_parameter('heading_hint_lowpass_alpha').value),
+            0.0,
+            1.0,
+        )
+        self.waypoint_arrival_distance = max(
+            0.0,
+            float(self.get_parameter('waypoint_arrival_distance').value),
+        )
+        self.route_suppression_opposition_threshold = max(
+            0.0,
+            float(self.get_parameter('route_suppression_opposition_threshold').value),
+        )
+        self.local_curvature_speed_reduction_max = clamp(
+            float(self.get_parameter('local_curvature_speed_reduction_max').value),
+            0.0,
+            0.60,
+        )
         self.max_angular_z = float(self.get_parameter('max_angular_z').value)
         self.recovery_max_angular_z = float(self.get_parameter('recovery_max_angular_z').value)
         self.avoid_max_angular_z = float(self.get_parameter('avoid_max_angular_z').value)
@@ -570,6 +652,10 @@ class CmdFusionNode(Node):
         self.blocked_center = False
         self.blocked_selected_side = False
         self.heading_hint = 0.0
+        self.route_heading_hint_filtered = 0.0
+        self.route_heading_error = 0.0
+        self.waypoint_distance = 0.0
+        self.waypoint_index = 0
         self.waypoint_progress = 0.0
 
         self.lane_error_stamp_ns = 0
@@ -596,6 +682,9 @@ class CmdFusionNode(Node):
         self.blocked_center_stamp_ns = 0
         self.blocked_selected_side_stamp_ns = 0
         self.heading_hint_stamp_ns = 0
+        self.route_heading_error_stamp_ns = 0
+        self.waypoint_distance_stamp_ns = 0
+        self.waypoint_index_stamp_ns = 0
         self.waypoint_progress_stamp_ns = 0
         self.last_log_ns = 0
         self.last_reliable_lane_error = 0.0
@@ -642,6 +731,9 @@ class CmdFusionNode(Node):
         self.create_subscription(Bool, obstacle_blocked_center_topic, self.blocked_center_cb, 10)
         self.create_subscription(Bool, obstacle_blocked_selected_side_topic, self.blocked_selected_side_cb, 10)
         self.create_subscription(Float32, waypoint_heading_hint_topic, self.heading_hint_cb, 10)
+        self.create_subscription(Float32, waypoint_heading_error_topic, self.heading_error_cb, 10)
+        self.create_subscription(Float32, waypoint_distance_topic, self.waypoint_distance_cb, 10)
+        self.create_subscription(Int32, waypoint_index_topic, self.waypoint_index_cb, 10)
         self.create_subscription(Float32, waypoint_progress_topic, self.progress_cb, 10)
 
         control_hz = max(5.0, float(self.get_parameter('control_hz').value))
@@ -911,6 +1003,18 @@ class CmdFusionNode(Node):
         self.heading_hint = float(msg.data)
         self.heading_hint_stamp_ns = self.get_clock().now().nanoseconds
 
+    def heading_error_cb(self, msg: Float32) -> None:
+        self.route_heading_error = float(msg.data)
+        self.route_heading_error_stamp_ns = self.get_clock().now().nanoseconds
+
+    def waypoint_distance_cb(self, msg: Float32) -> None:
+        self.waypoint_distance = max(0.0, float(msg.data))
+        self.waypoint_distance_stamp_ns = self.get_clock().now().nanoseconds
+
+    def waypoint_index_cb(self, msg: Int32) -> None:
+        self.waypoint_index = max(0, int(msg.data))
+        self.waypoint_index_stamp_ns = self.get_clock().now().nanoseconds
+
     def progress_cb(self, msg: Float32) -> None:
         self.waypoint_progress = clamp(float(msg.data), 0.0, 1.0)
         self.waypoint_progress_stamp_ns = self.get_clock().now().nanoseconds
@@ -938,6 +1042,164 @@ class CmdFusionNode(Node):
         if pass_side == 'RIGHT':
             return -1.0
         return 0.0
+
+    def route_weight_for_mode(self, local_authority_mode: str) -> float:
+        if local_authority_mode == 'blocked_or_critical':
+            return self.route_weight_blocked
+        if local_authority_mode == 'committed_side_pass':
+            return self.route_weight_committed_pass
+        if local_authority_mode == 'pre_avoid':
+            return self.route_weight_pre_avoid
+        if local_authority_mode == 'center_corridor':
+            return self.route_weight_center_corridor
+        if local_authority_mode == 'single_lane':
+            return self.route_weight_single_lane
+        if local_authority_mode == 'no_lane_recover':
+            return self.route_weight_no_lane
+        return self.route_weight_normal_lane
+
+    def select_local_authority_mode(
+        self,
+        effective_lane_state: str,
+        safety_priority_active: bool,
+        commit_active: bool,
+        pre_avoid_active: bool,
+        obstacle_active: bool,
+        center_corridor_should_dominate: bool,
+        blocked_center: bool,
+    ) -> str:
+        if safety_priority_active:
+            return 'blocked_or_critical'
+        if commit_active:
+            return 'committed_side_pass'
+        if (
+            center_corridor_should_dominate
+            or (self.center_corridor_exists and self.center_corridor_preferred and not blocked_center)
+        ):
+            return 'center_corridor'
+        if pre_avoid_active or obstacle_active:
+            return 'pre_avoid'
+        if effective_lane_state == 'NORMAL_LANE':
+            return 'normal_lane'
+        if effective_lane_state == 'SINGLE_LANE':
+            return 'single_lane'
+        return 'no_lane_recover'
+
+    def compute_route_term(
+        self,
+        heading_hint: float,
+        route_weight: float,
+        local_authority_mode: str,
+        safety_priority_active: bool,
+        obstacle_unknown: bool,
+        commit_active: bool,
+        center_corridor_should_dominate: bool,
+        runtime_lane_hard_constraint_active: bool,
+        lane_term: float,
+        corridor_term: float,
+        avoid_term: float,
+        waypoint_distance: float,
+    ) -> tuple[float, bool, str, bool, bool, bool, float]:
+        alpha = self.heading_hint_lowpass_alpha
+        self.route_heading_hint_filtered = (
+            alpha * clamp(heading_hint, -1.0, 1.0)
+            + (1.0 - alpha) * self.route_heading_hint_filtered
+        )
+        route_term_raw = route_weight * self.route_heading_hint_filtered
+        route_term = route_term_raw
+        route_term_suppressed = False
+        route_suppression_reason = 'none'
+        center_corridor_override_route = False
+        committed_pass_blocks_route = False
+        target_clipped_to_lane_bounds = False
+
+        if waypoint_distance > 0.0 and waypoint_distance <= self.waypoint_arrival_distance:
+            route_term = 0.0
+            route_term_suppressed = abs(route_term_raw) > 1e-4
+            route_suppression_reason = 'waypoint_arrival'
+        elif safety_priority_active or local_authority_mode == 'blocked_or_critical':
+            route_term = 0.0
+            route_term_suppressed = abs(route_term_raw) > 1e-4
+            route_suppression_reason = 'safety_priority'
+        elif obstacle_unknown:
+            route_term = 0.0
+            route_term_suppressed = abs(route_term_raw) > 1e-4
+            route_suppression_reason = 'unknown_obstacle'
+        elif commit_active or local_authority_mode == 'committed_side_pass':
+            committed_pass_blocks_route = True
+            route_term = 0.0
+            route_term_suppressed = abs(route_term_raw) > 1e-4
+            route_suppression_reason = 'committed_pass'
+        else:
+            local_safety_term = avoid_term if abs(avoid_term) > abs(corridor_term) else corridor_term
+            local_corridor_term = lane_term + corridor_term
+            opposition_threshold = self.route_suppression_opposition_threshold
+
+            if (
+                abs(local_safety_term) >= opposition_threshold
+                and route_term * local_safety_term < 0.0
+                and local_authority_mode in ('pre_avoid', 'center_corridor')
+            ):
+                route_term = 0.0
+                route_term_suppressed = abs(route_term_raw) > 1e-4
+                route_suppression_reason = 'route_opposes_local_safety'
+            elif (
+                runtime_lane_hard_constraint_active
+                and abs(local_corridor_term) >= opposition_threshold
+                and route_term * local_corridor_term < 0.0
+            ):
+                route_term = 0.0
+                route_term_suppressed = abs(route_term_raw) > 1e-4
+                route_suppression_reason = 'route_opposes_lane_constraint'
+
+            if route_term != 0.0 and runtime_lane_hard_constraint_active:
+                clipped = clamp(
+                    route_term,
+                    -self.route_term_lane_clip_margin,
+                    self.route_term_lane_clip_margin,
+                )
+                if abs(clipped - route_term) > 1e-6:
+                    target_clipped_to_lane_bounds = True
+                    route_suppression_reason = (
+                        'lane_bound_clip'
+                        if route_suppression_reason == 'none'
+                        else route_suppression_reason
+                    )
+                route_term = clipped
+
+            if route_term != 0.0 and (
+                center_corridor_should_dominate
+                or local_authority_mode == 'center_corridor'
+            ):
+                center_corridor_override_route = True
+                clipped = clamp(
+                    route_term,
+                    -self.center_corridor_route_bias_cap,
+                    self.center_corridor_route_bias_cap,
+                )
+                if abs(clipped - route_term) > 1e-6:
+                    target_clipped_to_lane_bounds = True
+                    route_suppression_reason = (
+                        'center_corridor_bias_clip'
+                        if route_suppression_reason == 'none'
+                        else route_suppression_reason
+                    )
+                route_term = clipped
+
+        if abs(route_term) <= 1e-5 and abs(route_term_raw) > 1e-4:
+            route_term_suppressed = True
+            if route_suppression_reason == 'none':
+                route_suppression_reason = 'zero_after_clip'
+
+        return (
+            route_term,
+            route_term_suppressed,
+            route_suppression_reason,
+            center_corridor_override_route,
+            committed_pass_blocks_route,
+            target_clipped_to_lane_bounds,
+            route_term_raw,
+        )
 
     def update_lane_reacquisition_guard(
         self,
@@ -1186,6 +1448,21 @@ class CmdFusionNode(Node):
             if self.is_recent(self.heading_hint_stamp_ns, self.waypoint_timeout_ns, now_ns)
             else 0.0
         )
+        route_heading_error = (
+            self.route_heading_error
+            if self.is_recent(self.route_heading_error_stamp_ns, self.waypoint_timeout_ns, now_ns)
+            else 0.0
+        )
+        waypoint_distance = (
+            self.waypoint_distance
+            if self.is_recent(self.waypoint_distance_stamp_ns, self.waypoint_timeout_ns, now_ns)
+            else 0.0
+        )
+        waypoint_index = (
+            self.waypoint_index
+            if self.is_recent(self.waypoint_index_stamp_ns, self.waypoint_timeout_ns, now_ns)
+            else 0
+        )
         obstacle_progress = (
             self.obstacle_progress
             if self.is_recent(self.obstacle_progress_stamp_ns, self.obstacle_timeout_ns, now_ns)
@@ -1384,16 +1661,6 @@ class CmdFusionNode(Node):
             lane_heading_for_control = (
                 (1.0 - blend) * current_heading + blend * self.last_reliable_lane_heading_error
             )
-
-        waypoint_weight = (
-            self.waypoint_weight_with_lane
-            if lane_available and lane_confidence >= 0.35
-            else self.waypoint_weight_no_lane
-        )
-        if avoid_context_active:
-            waypoint_weight = 0.0
-        if obstacle_unknown:
-            waypoint_weight = 0.0
 
         runtime_lane_hard_constraint_active = (
             self.lane_hard_constraint_active
@@ -1664,7 +1931,56 @@ class CmdFusionNode(Node):
                 self.advisory_gap_center_corridor_term_cap,
             )
         avoid_term = corridor_term
-        steering = lane_term + corridor_term + (waypoint_weight * heading_hint)
+        safety_priority_active = bool(
+            (blocked_center and blocked_selected_side)
+            or critical_commit_active
+            or (
+                authoritative_state_recent
+                and self.authoritative_obstacle_latch_state == 'emergency'
+                and not false_emergency_state
+            )
+        )
+        local_authority_mode = self.select_local_authority_mode(
+            effective_lane_state,
+            safety_priority_active,
+            commit_active,
+            pre_avoid_active,
+            obstacle_active,
+            center_corridor_should_dominate,
+            blocked_center,
+        )
+        if (
+            local_authority_mode == 'normal_lane'
+            and lane_confidence < self.nominal_confidence_threshold
+        ):
+            local_authority_mode = 'single_lane'
+        route_weight_used = self.route_weight_for_mode(local_authority_mode)
+        (
+            route_term,
+            route_term_suppressed,
+            route_suppression_reason,
+            center_corridor_override_route,
+            committed_pass_blocks_route,
+            route_target_clipped_to_lane_bounds,
+            route_term_raw,
+        ) = self.compute_route_term(
+            heading_hint,
+            route_weight_used,
+            local_authority_mode,
+            safety_priority_active,
+            obstacle_unknown,
+            commit_active,
+            center_corridor_should_dominate,
+            runtime_lane_hard_constraint_active,
+            lane_term,
+            corridor_term,
+            avoid_term,
+            waypoint_distance,
+        )
+        target_clipped_to_lane_bounds_runtime = bool(
+            self.target_clipped_to_lane_bounds or route_target_clipped_to_lane_bounds
+        )
+        steering = lane_term + corridor_term + route_term
         speed_limit = self.base_speed
         mode = 'no_lane'
         commit_steer_clamp_used = self.commit_max_angular if commit_active else self.avoid_max_angular_z
@@ -1715,6 +2031,7 @@ class CmdFusionNode(Node):
                 + self.lane_heading_kp * self.last_reliable_lane_heading_error
                 + 0.25 * self.offlane_recovery_gain * self.last_reliable_lane_error
                 + corridor_weight_used * obstacle_bias
+                + route_term
             )
             steer_limit = self.commit_max_angular if commit_active else (self.avoid_max_angular_z if avoid_context_active else self.recovery_max_angular_z)
             steering = clamp(steering, -steer_limit, steer_limit)
@@ -1732,6 +2049,7 @@ class CmdFusionNode(Node):
                     + self.lane_heading_kp * self.last_reliable_lane_heading_error
                 )
                 + corridor_weight_used * obstacle_bias
+                + route_term
             )
             steer_limit = min(self.commit_max_angular, self.max_steer_single_line) if commit_active else self.max_steer_single_line
             steering = clamp(steering, -steer_limit, steer_limit)
@@ -1740,13 +2058,39 @@ class CmdFusionNode(Node):
             speed = self.no_lane_memory_speed * max(0.6, obstacle_speed_scale)
         else:
             neutral_limit = 0.10 if (self.lane_reacquisition_guard_active and avoid_context_active) else 0.20
-            steering = corridor_weight_used * obstacle_bias
+            steering = corridor_weight_used * obstacle_bias + route_term
             steering = clamp(steering, -neutral_limit, neutral_limit)
             commit_steer_clamp_used = min(commit_steer_clamp_used, neutral_limit)
             speed_limit = self.no_lane_crawl_speed
             speed = self.no_lane_crawl_speed * obstacle_speed_scale
             if abs(obstacle_bias) < 0.05:
                 speed = min(self.no_lane_crawl_speed, 0.04)
+
+        local_curvature_term = lane_term + avoid_term
+        local_curvature_full_scale = max(
+            self.commit_max_angular if commit_active else self.avoid_max_angular_z,
+            1e-3,
+        )
+        local_curvature_ratio = clamp(
+            abs(local_curvature_term) / local_curvature_full_scale,
+            0.0,
+            1.0,
+        )
+        local_curvature_speed_scale = 1.0
+        if (
+            avoid_context_active
+            or center_corridor_should_dominate
+            or abs(avoid_term) > 0.03
+            or local_curvature_ratio > 0.50
+        ):
+            local_curvature_speed_scale = 1.0 - (
+                self.local_curvature_speed_reduction_max * local_curvature_ratio
+            )
+            local_curvature_speed_scale = clamp(local_curvature_speed_scale, 0.35, 1.0)
+            speed_limit *= local_curvature_speed_scale
+            speed *= local_curvature_speed_scale
+        curvature_speed_scale_used = min(curve_speed_scale, local_curvature_speed_scale)
+        route_speed_influence = 1.0
 
         if avoid_context_active:
             speed_limit *= obstacle_speed_guard_scale
@@ -1827,7 +2171,7 @@ class CmdFusionNode(Node):
             steering = clamp(steering, -0.16, 0.16)
             commit_steer_clamp_used = min(commit_steer_clamp_used, 0.16)
 
-        lane_dominant_steer = lane_term + (waypoint_weight * heading_hint)
+        lane_dominant_steer = lane_term + route_term
         if stale_commit_active:
             decay_keep = clamp(
                 1.0 - (self.stale_commit_steer_decay_rate * self.control_period),
@@ -1883,9 +2227,11 @@ class CmdFusionNode(Node):
             speed_limit *= pre_avoid_speed_scale
             speed *= pre_avoid_speed_scale
             speed_after_curvature_scaling = speed
-        if commit_active and authoritative_pass_side in ('LEFT', 'RIGHT'):
+        if local_authority_mode == 'blocked_or_critical':
+            final_controller_mode = 'blocked_or_critical'
+        elif commit_active and authoritative_pass_side in ('LEFT', 'RIGHT'):
             final_controller_mode = 'committed_side_pass'
-        elif center_corridor_should_dominate:
+        elif local_authority_mode == 'center_corridor':
             final_controller_mode = 'center_corridor'
         elif advisory_gap_active:
             final_controller_mode = 'advisory_side_gap'
@@ -1922,8 +2268,12 @@ class CmdFusionNode(Node):
             self.last_log_ns = now_ns
             self.get_logger().info(
                 f'[FUSION] mode={mode} lane_state={effective_lane_state} lane_available={lane_available} lane_conf={lane_confidence:.2f} '
-                f'lane_term={lane_term:+.3f} corridor_term={corridor_term:+.3f} avoid_term={avoid_term:+.3f} obstacle_bias={obstacle_bias:+.3f} '
+                f'local_authority_mode={local_authority_mode} safety_priority_active={safety_priority_active} '
+                f'lane_term={lane_term:+.3f} corridor_term={corridor_term:+.3f} avoid_term={avoid_term:+.3f} '
+                f'route_term={route_term:+.3f} route_term_raw={route_term_raw:+.3f} obstacle_bias={obstacle_bias:+.3f} '
                 f'lane_weight_used={lane_weight_used:.2f} corridor_weight_used={corridor_weight_used:.2f} '
+                f'route_weight_used={route_weight_used:.3f} route_term_suppressed={route_term_suppressed} '
+                f'route_suppression_reason={route_suppression_reason} '
                 f'obstacle_active={obstacle_active} obstacle_unknown={obstacle_unknown} '
                 f'authoritative_pass_owner={self.authoritative_pass_owner} '
                 f'authoritative_obstacle_latch_state={self.authoritative_obstacle_latch_state} '
@@ -1950,6 +2300,8 @@ class CmdFusionNode(Node):
                 f'lane_hard_constraint_active={self.lane_hard_constraint_active} '
                 f'center_corridor_exists={self.center_corridor_exists} '
                 f'center_corridor_preferred={self.center_corridor_preferred} '
+                f'center_corridor_override_route={center_corridor_override_route} '
+                f'committed_pass_blocks_route={committed_pass_blocks_route} '
                 f'center_preferred_reason={self.center_preferred_reason} '
                 f'false_critical_override_detected={self.false_critical_override_detected} '
                 f'false_emergency_demoted={self.false_emergency_demoted} '
@@ -1981,7 +2333,7 @@ class CmdFusionNode(Node):
                 f'advisory_side_gap_strength={advisory_side_gap_strength:.2f} '
                 f'side_gap_suppressed_due_to_no_commit={self.side_gap_suppressed_due_to_no_commit} '
                 f'side_target_suppressed_reason={self.side_target_suppressed_reason} '
-                f'target_clipped_to_lane_bounds={self.target_clipped_to_lane_bounds} '
+                f'target_clipped_to_lane_bounds={target_clipped_to_lane_bounds_runtime} '
                 f'target_clip_reason={self.target_clip_reason} '
                 f'final_controller_mode={final_controller_mode} '
                 f'ignored_transient_none_due_to_commit_lock={self.ignored_transient_none_due_to_commit_lock} '
@@ -1993,9 +2345,15 @@ class CmdFusionNode(Node):
                 f'aggressive_steering_suppressed_reason={aggressive_steering_suppressed_reason} '
                 f'steer_before_slew_limit={steer_before_slew_limit:+.3f} '
                 f'steer_after_slew_limit={steer_after_slew_limit:+.3f} '
-                f'heading_hint={heading_hint:+.3f} obstacle_progress={obstacle_progress:.2f} waypoint_progress={waypoint_progress:.2f} '
+                f'route_heading_hint={self.route_heading_hint_filtered:+.3f} '
+                f'route_heading_hint_raw={heading_hint:+.3f} route_heading_error={route_heading_error:+.3f} '
+                f'waypoint_distance={waypoint_distance:.2f} waypoint_index={waypoint_index} '
+                f'obstacle_progress={obstacle_progress:.2f} waypoint_progress={waypoint_progress:.2f} '
                 f'speed_after_curvature_scaling={speed_after_curvature_scaling:.2f} '
-                f'curve_scale={curve_speed_scale:.2f} '
+                f'curvature_speed_scale={curvature_speed_scale_used:.2f} '
+                f'curve_scale={curve_speed_scale:.2f} local_curvature_speed_scale={local_curvature_speed_scale:.2f} '
+                f'obstacle_speed_scale={obstacle_speed_scale:.2f} obstacle_speed_guard_scale={obstacle_speed_guard_scale:.2f} '
+                f'route_speed_influence={route_speed_influence:.2f} '
                 f'speed={speed:.2f} steer={steering:+.3f} stop_reason={self.last_stop_reason}'
             )
 

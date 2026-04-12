@@ -2,7 +2,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, TimerAction
 from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnShutdown
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 import os
@@ -35,8 +35,47 @@ def generate_launch_description():
     spawn_z = LaunchConfiguration('spawn_z')
     spawn_yaw = LaunchConfiguration('spawn_yaw')
     use_local_ekf = LaunchConfiguration('use_local_ekf')
+    enable_gps_stack = LaunchConfiguration('enable_gps_stack')
+    enable_fake_rtk = LaunchConfiguration('enable_fake_rtk')
+    fake_rtk_input_topic = LaunchConfiguration('fake_rtk_input_topic')
+    gps_fix_topic = LaunchConfiguration('gps_fix_topic')
+    rtk_status = LaunchConfiguration('rtk_status')
     cleanup_stale_gazebo = LaunchConfiguration('cleanup_stale_gazebo')
     world_file = LaunchConfiguration('world')
+
+    gps_stack_condition = IfCondition(
+        PythonExpression(
+            [
+                "'",
+                enable_gps_stack,
+                "'.lower() == 'true' and '",
+                use_local_ekf,
+                "'.lower() == 'true'",
+            ]
+        )
+    )
+    fake_rtk_condition = IfCondition(
+        PythonExpression(
+            [
+                "'",
+                enable_gps_stack,
+                "'.lower() == 'true' and '",
+                enable_fake_rtk,
+                "'.lower() == 'true'",
+            ]
+        )
+    )
+    static_map_condition = UnlessCondition(
+        PythonExpression(
+            [
+                "'",
+                enable_gps_stack,
+                "'.lower() == 'true' and '",
+                use_local_ekf,
+                "'.lower() == 'true'",
+            ]
+        )
+    )
 
     gazebo_process = ExecuteProcess(
         condition=UnlessCondition(cleanup_stale_gazebo),
@@ -104,6 +143,31 @@ def generate_launch_description():
             description='Absolute path to the Gazebo world file.',
         ),
         DeclareLaunchArgument('use_local_ekf', default_value='false'),
+        DeclareLaunchArgument(
+            'enable_gps_stack',
+            default_value='false',
+            description='Enable RTK/GPS navsat_transform and global EKF.',
+        ),
+        DeclareLaunchArgument(
+            'enable_fake_rtk',
+            default_value='false',
+            description='Use the Gazebo GPS fix as a simulated RTK source.',
+        ),
+        DeclareLaunchArgument(
+            'fake_rtk_input_topic',
+            default_value='/gps/fix',
+            description='Input NavSatFix topic for the simulated RTK adapter.',
+        ),
+        DeclareLaunchArgument(
+            'gps_fix_topic',
+            default_value='/vehicle/gps/fix',
+            description='RTK NavSatFix topic consumed by navsat_transform.',
+        ),
+        DeclareLaunchArgument(
+            'rtk_status',
+            default_value='FIX',
+            description='Simulated RTK quality: FIX | FLOAT | NO_FIX.',
+        ),
         DeclareLaunchArgument('cleanup_stale_gazebo', default_value='true'),
 
         gazebo_shutdown_cleanup,
@@ -184,6 +248,7 @@ def generate_launch_description():
 
         TimerAction(
             period=16.0,
+            condition=static_map_condition,
             actions=[
                 Node(
                     package='tf2_ros',
@@ -191,6 +256,63 @@ def generate_launch_description():
                     name='map_to_odom_identity_tf',
                     arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
                     parameters=[{'use_sim_time': True}],
+                    output='screen',
+                )
+            ],
+        ),
+
+        TimerAction(
+            period=18.0,
+            condition=fake_rtk_condition,
+            actions=[
+                Node(
+                    package='vehicle_sensor_adapters',
+                    executable='fake_rtk_node',
+                    name='fake_rtk_node',
+                    parameters=[
+                        {
+                            'use_sim_time': True,
+                            'input_fix_topic': fake_rtk_input_topic,
+                            'output_fix_topic': gps_fix_topic,
+                            'rtk_status': rtk_status,
+                        }
+                    ],
+                    output='screen',
+                )
+            ],
+        ),
+
+        TimerAction(
+            period=20.0,
+            condition=gps_stack_condition,
+            actions=[
+                Node(
+                    package='robot_localization',
+                    executable='ekf_node',
+                    name='ekf_filter_node_map',
+                    parameters=[ekf_config, {'use_sim_time': True}],
+                    remappings=[('odometry/filtered', '/odometry/global')],
+                    output='screen',
+                )
+            ],
+        ),
+
+        TimerAction(
+            period=22.0,
+            condition=gps_stack_condition,
+            actions=[
+                Node(
+                    package='robot_localization',
+                    executable='navsat_transform_node',
+                    name='navsat_transform',
+                    parameters=[ekf_config, {'use_sim_time': True}],
+                    remappings=[
+                        ('imu', '/imu'),
+                        ('imu/data', '/imu'),
+                        ('gps/fix', gps_fix_topic),
+                        ('odometry/filtered', '/odometry/local'),
+                        ('odometry/gps', '/odometry/gps'),
+                    ],
                     output='screen',
                 )
             ],
